@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="..\Atlas.props" />
+	<ItemGroup>
+		<ProjectReference Include="..\Atlas.Core\Atlas.Core.csproj" />
+		<ProjectReference Include="..\..\external\Titanis\src\base\Titanis.Cli.CommonParameters\Titanis.Cli.CommonParameters.csproj" />
+		<ProjectReference Include="..\..\external\Titanis\src\base\Titanis.Cli.DceRpc\Titanis.Cli.DceRpc.csproj" />
+		<ProjectReference Include="..\..\external\Titanis\src\net\Titanis.DceRpc\Titanis.DceRpc.csproj" />
+		<ProjectReference Include="..\..\external\Titanis\src\net\msrpc\Titanis.Msrpc.Msdcom\Titanis.Msrpc.Msdcom.csproj" />
+		<ProjectReference Include="..\..\external\Titanis\src\net\msrpc\Titanis.Msrpc.Mswmi\Titanis.Msrpc.Mswmi.csproj" />
+	</ItemGroup>
+</Project>

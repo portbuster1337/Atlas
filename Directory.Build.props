@@ -1,0 +1,6 @@
+<!-- Intentionally empty.
+     Titanis's src/Directory.Build.props imports $(SolutionDir)Directory.Build.props;
+     when building Atlas.sln this file must exist so that import resolves.
+     Atlas project settings live in src/Atlas.props (imported explicitly). -->
+<Project>
+</Project>

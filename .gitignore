@@ -1,0 +1,8 @@
+bin/
+obj/
+*.user
+.vs/
+artifacts/
+
+# Internal notes (not for publication)
+external/Titanis/ATLAS-PATCHES.md

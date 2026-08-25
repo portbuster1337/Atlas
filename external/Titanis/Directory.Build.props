@@ -1,0 +1,71 @@
+<!-- Solution wide -->
+<Project>
+	<PropertyGroup>
+		<UseArtifactsOutput>true</UseArtifactsOutput>
+		<BUILD_BINARIESDIRECTORY Condition="'$(BUILD_BINARIESDIRECTORY)'==''">$(SolutionDir)artifacts</BUILD_BINARIESDIRECTORY>
+		<ArtifactsPath>$(BUILD_BINARIESDIRECTORY)\</ArtifactsPath>
+		<!--<ArtifactsPath Condition="'$(OS)'!='Windows_NT'">$(ArtifactsPath)$(OS)\</ArtifactsPath>-->
+
+		<ArtifactsBasePath>$(ArtifactsPath)</ArtifactsBasePath>
+
+		<LangVersion>12.0</LangVersion>
+
+		<!-- Versioning and Packaging -->
+		<Build_InfoVersion Condition="'$(Build_InfoVersion)'==''">dev</Build_InfoVersion>
+		<Build_Version Condition="'$(Build_Version)'==''">0.9</Build_Version>
+		<Build_FileBuildNumber Condition="'$(Build_FileBuildNumber)'==''">$([System.DateTime]::Now.ToString('yyyyMMddHHmmss'))</Build_FileBuildNumber>
+		<Build_Revision>Q</Build_Revision>
+		<AssemblyVersion>$(Build_Version).7.7</AssemblyVersion>
+		<Version>$(AssemblyVersion)</Version>
+		<FileVersion>$(Build_Version).$(Build_FileBuildNumber).$(Build_Revision)</FileVersion>
+		<InformationalVersion>$(FileVersion)-$(Build_InfoVersion)</InformationalVersion>
+
+		<NeutralLanguage>en-US</NeutralLanguage>
+		<Copyright>codewhisperer84</Copyright>
+		<Authors>codewhisperer84</Authors>
+		<Company />
+		<Product>Titanis</Product>
+		<RepositoryType>git</RepositoryType>
+
+		<!-- CS0472 // The result of the expression is always the same since a value of this type is never equal to  -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS0472</WarningsAsErrors>
+		<!-- XML doc not on valid target -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1587</WarningsAsErrors>
+		<!-- CS0108 - Hides inherited member -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS0108</WarningsAsErrors>
+		<!-- CS0114 - Hides -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS0114</WarningsAsErrors>
+		<!-- CS0252 - Possible unintended reference comparison; left hand side needs cast -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS0252</WarningsAsErrors>
+		<!-- CS0419 - Ambiguous XML cref -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS0419</WarningsAsErrors>
+		<!-- CS1570 - XML comment badly formed -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1570</WarningsAsErrors>
+		<!-- CS1571 - XML comment has duplicate param -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1571</WarningsAsErrors>
+		<!-- CS1572 - Bad XML param -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1572</WarningsAsErrors>
+		<!-- CS1574 - Bad cref -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1574</WarningsAsErrors>
+		<!-- CS1584 - Bad XML syntax -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1584</WarningsAsErrors>
+		<!-- CS1710 - Duplicate XML typeparam tag -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1710</WarningsAsErrors>
+		<!-- CS1717 - Unnecessary assignment -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1717</WarningsAsErrors>
+		<!-- CS1734 - XML comment has a paramref tag, but there is no parameter by that name -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS1734</WarningsAsErrors>
+		<!-- CS4814 - Async method not awaited -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS4814</WarningsAsErrors>
+		<!-- CS8786 - Generator didn't work -->
+		<WarningsAsErrors>$(WarningsAsErrors);CS8786</WarningsAsErrors>
+		<!-- CA1416 - Windows-only code reachable -->
+		<WarningsAsErrors>$(WarningsAsErrors);CA1416</WarningsAsErrors>
+		<!-- CA1725 - Overriden  -->
+		<WarningsAsErrors>$(WarningsAsErrors);CA1725</WarningsAsErrors>
+		<!-- CA2200 - Rethrowing caught exception -->
+		<WarningsAsErrors>$(WarningsAsErrors);CA2200</WarningsAsErrors>
+		
+		
+	</PropertyGroup>
+</Project>

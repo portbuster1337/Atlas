@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>Titanis.Crypto</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Memory" />
+    <PackageReference Include="Titanis.Crypto.Aes128Cmac" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Titanis.Crypto.Aes128Cmac\Titanis.Crypto.Aes128Cmac.csproj" />
+  </ItemGroup>
+
+</Project>

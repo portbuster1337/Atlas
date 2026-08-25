@@ -1,0 +1,46 @@
+<Project>
+
+
+	<!--<Target Name="PushNuGetPackage" AfterTargets="GenerateNuspec">
+		<Exec Command="dotnet nuget push $(ArtifactsPath)\package\$(Configuration)\$(ProjectName).$(PackageVersion).nupkg -s Local-$(Configuration)"></Exec>
+	</Target>-->
+
+	<UsingTask Condition="'$(ArtifactsBasePath)'!=''" TaskName="Titanis.ToolDocBuilder.BuildToolDocTask" AssemblyFile="$(ArtifactsBasePath)\build\bin\Titanis.ToolDocBuilder\$(Configuration.ToLower())\Titanis.ToolDocBuilder.dll">
+
+	</UsingTask>
+
+	<Target Name="BuildDocs" AfterTargets="Build">
+		<Message Text="Building documentation" Importance="high" />
+		<BuildToolDocTask
+			Condition="'$(ArtifactsBasePath)'!=''"
+			AssemblyFile="$(OutputPath)$(AssemblyName)$(TargetExt)"
+			DocFile="$(SolutionDir)docs\UserGuide\tools\$(AssemblyName).md"
+			BashAutocompFile="$(SolutionDir)autocomp\bash\$(AssemblyName)"
+			ZshAutocompPath="$(SolutionDir)autocomp\zsh\"
+			ManPagePath="$(SolutionDir)man\man1\"
+			/>
+	</Target>
+
+	<Target Name="PublishAll" AfterTargets="Build" Condition="'$(Publishing)'=='' and '$(Configuration)'=='Release'" >
+		<ItemGroup>
+			<RuntimeIdentifierToPublish Include="$(RuntimeIdentifiers)"/>
+
+			<ProjectToPublish Include="@(RuntimeIdentifierToPublish->'$(MSBuildProjectFullPath)')">
+				<AdditionalProperties>RuntimeIdentifier=%(RuntimeIdentifierToPublish.Identity)</AdditionalProperties>
+				<RuntimeIdentifier>%(RuntimeIdentifierToPublish.Identity)</RuntimeIdentifier>
+			</ProjectToPublish>
+		</ItemGroup>
+
+		<MSBuild Projects="@(ProjectToPublish)"
+				 Targets="Publish"
+				 BuildInParallel="true"
+				 Properties="Publishing=true;SelfContained=true;PublishDir=$(ArtifactsBasePath)publish/sc/tools/%(ProjectToPublish.RuntimeIdentifier)/"
+				 />
+
+		<MSBuild Projects="@(ProjectToPublish)"
+				 Targets="Publish"
+				 BuildInParallel="true"
+				 Properties="Publishing=true;SelfContained=false;PublishDir=$(ArtifactsBasePath)publish/net8/tools/%(ProjectToPublish.RuntimeIdentifier)/"
+				 />
+	</Target>
+</Project>

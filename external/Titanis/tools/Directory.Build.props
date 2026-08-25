@@ -1,0 +1,17 @@
+<!-- /test -->
+<Project>
+	<!-- Include global settings -->
+	<Import Project="$(SolutionDir)Directory.Build.props"/>
+
+	<PropertyGroup>
+		<ArtifactsPath>$(ArtifactsPath)tools\</ArtifactsPath>
+		<RuntimeIdentifiers>win-x86;win-x64;linux-x64;linux-arm64;osx-arm64</RuntimeIdentifiers>
+
+		<GenerateDocumentationFile>True</GenerateDocumentationFile>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="$(SolutionDir)src\build\Titanis.ToolDocBuilder\Titanis.ToolDocBuilder.csproj" Private="false" ReferenceOutputAssembly="false">
+		</ProjectReference>
+	</ItemGroup>
+</Project>

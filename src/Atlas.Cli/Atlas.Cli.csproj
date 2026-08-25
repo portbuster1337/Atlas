@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="..\Atlas.props" />
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<RootNamespace>Atlas</RootNamespace>
+		<AssemblyName>atlas</AssemblyName>
+	</PropertyGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\Atlas.Core\Atlas.Core.csproj" />
+		<ProjectReference Include="..\Atlas.Protocols.Kerberos\Atlas.Protocols.Kerberos.csproj" />
+		<ProjectReference Include="..\Atlas.Protocols.Drsr\Atlas.Protocols.Drsr.csproj" />
+		<ProjectReference Include="..\Atlas.Protocols.Ldap\Atlas.Protocols.Ldap.csproj" />
+		<ProjectReference Include="..\Atlas.Protocols.Smb\Atlas.Protocols.Smb.csproj" />
+		<ProjectReference Include="..\Atlas.Protocols.Wmi\Atlas.Protocols.Wmi.csproj" />
+		<ProjectReference Include="..\..\external\Titanis\src\base\Titanis.Cli\Titanis.Cli.csproj" />
+	</ItemGroup>
+</Project>

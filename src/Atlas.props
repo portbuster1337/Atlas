@@ -1,0 +1,12 @@
+<!-- Explicitly imported by Atlas projects; never picked up automatically,
+     so it cannot leak into external/Titanis builds via $(SolutionDir). -->
+<Project>
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<RootNamespace>Atlas</RootNamespace>
+		<InvariantGlobalization>false</InvariantGlobalization>
+	</PropertyGroup>
+</Project>

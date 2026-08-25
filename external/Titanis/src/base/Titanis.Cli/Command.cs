@@ -1,0 +1,924 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.ComponentModel.Design;
+using System.Data.Common;
+using System.Diagnostics;
+using System.Dynamic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Titanis.Reflection;
+
+namespace Titanis.Cli
+{
+	/// <summary>
+	/// Specifies options for generating command help text.
+	/// </summary>
+	public enum CommandHelpOptions
+	{
+		None = 0,
+
+		Description = 1,
+		Synopsis = 2,
+		Parameters = 4,
+		Details = 8,
+		Examples = 0x10,
+
+		All = Description | Synopsis | Parameters | Details | Examples,
+		Default = All
+	}
+
+	/// <summary>
+	/// Represents a command that accepts arguments.
+	/// </summary>
+	/// <remarks>
+	/// To implement command behavior, override <see cref="RunAsync"/>.
+	/// This method is called after parameters are parsed and initialized.
+	/// <para>
+	/// To implement custom parameter validation, implement <see cref="ValidateParameters(ParameterValidationContext)"/>.
+	/// </para>
+	/// </remarks>
+	public abstract class Command : CommandBase, IValidateParameters, IOutputFieldProvider
+	{
+		#region Common fields
+		[Parameter]
+		[Alias("OutputStyle")]
+		[Category(ParameterCategories.Output)]
+		[Description("Determines the output style")]
+		public OutputStyle? ConsoleOutputStyle { get; set; }
+
+		public OutputStyle DefaultOutputStyle { get; private set; } = OutputStyle.List;
+
+
+		private string[]? _outputFields;
+		[Parameter(ParameterFlags.AffectsOutput)]
+		[Category(ParameterCategories.Output)]
+		[Description("Fields to display in output")]
+		[ValueListProvider(typeof(FieldListProvider))]
+		public string[]? OutputFields
+		{
+			get => _outputFields;
+			set
+			{
+				this.OutputFieldsSpecified = true;
+				_outputFields = value;
+			}
+		}
+		protected bool OutputFieldsSpecified { get; private set; }
+
+		[Parameter]
+		[Advanced]
+		[Category(ParameterCategories.Output)]
+		[Description("Print headers for table/list/CSV/TSV styles")]
+		[DefaultValue(true)]
+		public SwitchParam OutputHeaders { get; set; }
+
+		protected void SetOutputFormat(OutputStyle style)
+		{
+			this.VerifyContext().SetOutputFormat(style, this, this.OutputHeaders.IsSet);
+		}
+
+
+
+		OutputField[] IOutputFieldProvider.GetFieldsForType(Type recordType)
+		{
+			var fields = this.OutputFields;
+			if (fields != null && fields.Length == 1 && fields[0] == "*")
+				fields = null;
+
+			return this.ApplyFormatting(OutputField.GetFieldsFor(recordType, this.Context.MetadataContext, fields, typeof(ICustomTypeDescriptor).IsAssignableFrom(recordType)));
+		}
+		OutputField[] IOutputFieldProvider.GetFieldsForRecord(object record)
+		{
+			var fields = this.OutputFields;
+			if (fields != null && fields.Length == 1 && fields[0] == "*")
+				fields = null;
+
+			return this.ApplyFormatting(OutputField.GetFieldsFor(record, fields, record is ICustomTypeDescriptor));
+		}
+
+		bool IOutputFieldProvider.IncludesField(string fieldName)
+		{
+			return this.OutputFields is null || this.OutputFields.Any(r => fieldName?.Equals(r, StringComparison.OrdinalIgnoreCase) ?? false);
+		}
+
+		private OutputField[] ApplyFormatting(OutputField[] fields)
+		{
+			var formatAttrs = this.GetType().GetCustomAttributes<OutputFieldFormatAttribute>(true);
+			var byName = formatAttrs.GroupBy(a => a.FieldName).ToDictionary(g => g.Key);
+			foreach (var field in fields)
+			{
+				if (byName.TryGetValue(field.Name, out var group))
+				{
+					var attr = group.First();
+					field.FormatStringOverride = attr.FormatString;
+					if (attr.FormatterType is not null && typeof(IOutputFormatter).IsAssignableFrom(attr.FormatterType))
+					{
+						try
+						{
+							field.formatter = (IOutputFormatter)Activator.CreateInstance(attr.FormatterType);
+						}
+						catch
+						{
+							// Silently fail
+						}
+					}
+				}
+
+				if (this.HumanReadable.IsSet && field.IsFileSize && field.formatter == null)
+				{
+					field.FormatStringOverride = "H2";
+					field.formatter = FileSizeFormatter.Instance;
+				}
+			}
+
+			return fields;
+		}
+		#endregion
+
+		/// <inheritdoc/>
+		protected sealed override Task<int> InvokeAsync(string command, Token[]? args, int startIndex, CancellationToken cancellationToken)
+		{
+			Debug.Assert(this.Context != null);
+			args ??= Array.Empty<Token>();
+
+			var context = this.Context!;
+
+			if (args.Length > startIndex && IsDistressCall(args[startIndex].Text))
+			{
+				this.PrintHelpText(command, context.MetadataContext);
+				return Task.FromResult(0);
+			}
+			else
+			{
+				// Check for environmental options
+				{
+					string optionsVar = command.Replace(' ', '_').ToUpper() + "_OPTIONS";
+					var envOptions = context.GetVariable(optionsVar);
+					if (envOptions is string str)
+					{
+						try
+						{
+							this.WriteMessage($"Using options from environment {optionsVar}: {str}");
+							var envTokens = CommandLineParser.Tokenize(str);
+							var combinedArgs = new Token[envTokens.Length + args.Length];
+							combinedArgs[0] = args[0];
+							envTokens.CopyTo(combinedArgs, 1);
+							args.Slice(1).CopyTo(combinedArgs.Slice(1 + envTokens.Length));
+							args = combinedArgs;
+						}
+						catch (Exception ex)
+						{
+							this.WriteWarning($"Failed to parse environment options: {ex.Message}");
+						}
+					}
+				}
+
+				CommandMetadata metadata = this.GetCommandMetadata(context.MetadataContext);
+
+				var paramValues = this.Parse(args, startIndex, metadata);
+				return InvokeAsync(metadata, paramValues, cancellationToken);
+			}
+		}
+
+		public Task<int> InvokeAsync(ICommandContext context, Dictionary<string, object?> paramValues, CancellationToken cancellationToken)
+		{
+			if (context is null) throw new ArgumentNullException(nameof(context));
+			this.Context = context;
+			try
+			{
+				CommandMetadata metadata = this.GetCommandMetadata(context.MetadataContext);
+
+				var paramValueList = new Dictionary<ParameterMetadata, object?>();
+				if (paramValues != null)
+				{
+					foreach (var entry in paramValues)
+					{
+						if (metadata.ParametersByName.TryGetValue(entry.Key, out var param))
+							paramValueList.Add(param, entry.Value);
+					}
+				}
+
+				return this.InvokeAsync(metadata, paramValueList, cancellationToken);
+			}
+			finally
+			{
+				this.Context = null;
+			}
+		}
+		private Task<int> InvokeAsync(CommandMetadata metadata, Dictionary<ParameterMetadata, object?>? paramValues, CancellationToken cancellationToken)
+		{
+			Debug.Assert(this.Context != null);
+			var context = this.Context;
+			ImportEnvDefaults(metadata, paramValues, context);
+
+			this.DefaultOutputStyle = metadata.DefaultOutputStyle;
+			ApplyValues(paramValues, context, metadata);
+
+			var validateContext = new ParameterValidationContext();
+			foreach (var group in metadata.ParameterGroups)
+			{
+				var groupObj = group.GetGroupObject(this, false);
+				if (groupObj is IValidateParameters validator)
+					validator.ValidateParameters(validateContext, group.Options);
+			}
+
+			if (validateContext.Errors.Count > 0)
+				throw new SyntaxException(validateContext.Errors);
+
+			try
+			{
+				if (metadata.OutputRecordType is not null)
+				{
+					if (this.OutputFields == null)
+						this._outputFields = metadata.DefaultOutputFields;
+					else if (this.OutputFields.Length == 1 && this.OutputFields[0] is "*")
+						this.OutputFields = null;
+
+					this.SetOutputFormat(this.ConsoleOutputStyle ?? metadata.DefaultOutputStyle);
+				}
+			}
+			catch { }
+
+			this.PrintBanner();
+			return this.RunAsync(cancellationToken);
+		}
+
+#if DEBUG
+		private bool _baseValidateCalled;
+#endif
+
+		/// <inheritdoc/>
+		void IValidateParameters.ValidateParameters(ParameterValidationContext context, ParameterGroupOptions options)
+			=> this.ValidateParameters(context);
+		/// <summary>
+		/// Validates parameters before execution.
+		/// </summary>
+		/// <param name="context"><see cref="ParameterValidationContext"/> used to log errors</param>
+		protected virtual void ValidateParameters(ParameterValidationContext context)
+		{
+#if DEBUG
+			this._baseValidateCalled = true;
+#endif
+		}
+
+		private static readonly string[] ParamColNames = new string[] { "Name", "Aliases", "Value", "Description" };
+
+
+		/// <inheritdoc/>
+		public sealed override void PrintHelpText(IDocWriter writer, string commandName, CommandMetadataContext context) => BuildCommandHelpText(this.GetType(), writer, commandName, this, context);
+
+		public static void BuildCommandHelpText(Type commandType, IDocWriter writer, string commandName, object? commandInstance, CommandMetadataContext context, CommandHelpOptions options = CommandHelpOptions.Default)
+		{
+			if (context is null) throw new ArgumentNullException(nameof(context));
+
+			ICustomTypeDescriptor typeDescr = context.Resolver.GetDescriptor(commandType);
+			var doc = context.Resolver.GetDocumentation(commandType);
+
+			var desc = typeDescr.GetCustomAttribute<DescriptionAttribute>(true)?.Description ?? doc?.SelectSingleNode("doc:summary")?.InnerText;
+
+			var md = GetCommandMetadata(commandType, context);
+
+			// Synopsis
+			{
+				FormattedTextBuilder b = FormattedTextFactory.Builder();
+				b.Bold(commandName);
+
+				if (md.Parameters.Count > 0)
+					b.Text(" [").Italic("options").Text("]");
+
+				foreach (var namedParam in md.ParametersByName.Values)
+				{
+					if (!namedParam.IsPositional && namedParam.IsMandatory)
+					{
+						if (namedParam.IsSwitch)
+						{
+							b.Bold($" -{namedParam.Name}");
+						}
+						else
+						{
+							var ph = namedParam.Placeholder;
+							if (string.IsNullOrEmpty(ph))
+							{
+								ph = namedParam.ElementType.Name;
+								if (namedParam.IsList)
+									ph += "...";
+							}
+
+							b.Bold($" -{namedParam.Name}")
+								.Text(" <")
+								.Italic(ph)
+								.Text(" >");
+						}
+					}
+				}
+				foreach (var posParam in md.PositionalParameters)
+				{
+					if (posParam.IsMandatory)
+					{
+						b.Text(" <")
+							.Italic(posParam.Name)
+							.Text(">");
+					}
+					else
+					{
+						b.Text(" [ <")
+							.Italic(posParam.Name)
+							.Text("> ]");
+					}
+				}
+
+				if (0 != (options & CommandHelpOptions.Description))
+				{
+					writer
+						.WriteLine(desc)
+						.WriteLine()
+						;
+				}
+
+				if (0 != (options & CommandHelpOptions.Synopsis))
+				{
+					writer
+						.WriteHeading("Synopsis")
+						.WriteText(b.Build())
+						.WriteLine()
+						;
+					;
+				}
+			}
+
+			if (0 != (options & CommandHelpOptions.Parameters))
+			{
+				HashSet<string> allParamNames = new HashSet<string>(md.ParametersByName.Keys);
+
+				if (md.PositionalParameters.Count > 0)
+				{
+					writer.WriteLine().WriteHeading("Parameters");
+
+					TextTable table = new TextTable() { LeftMargin = "  " };
+					BuildParametersTable(table, md.PositionalParameters, allParamNames, commandInstance, context);
+
+					writer.WriteTable(table, ParamColNames);
+				}
+
+				var namedParams = md.Parameters.Where(r => !r.IsPositional).ToList();
+				namedParams.Sort((x, y) => x.Name.CompareTo(y.Name));
+				if (namedParams.Count > 0)
+				{
+					writer.WriteLine().WriteHeading("Options").WriteLine();
+
+					var groups = namedParams.GroupBy(r => r.Category).OrderBy(r => r.Key);
+					foreach (var group in groups)
+					{
+						if (!string.IsNullOrEmpty(group.Key))
+						{
+							writer.WriteLine().WriteSubheading($"{group.Key}");
+						}
+
+						TextTable table = new TextTable() { LeftMargin = Indent };
+						BuildParametersTable(table, group, allParamNames, commandInstance, context);
+
+						writer.WriteTable(table, "Name", "Aliases", "Value", "Description");
+					}
+				}
+			}
+
+			if (0 != (options & CommandHelpOptions.Details))
+			{
+				var details = GetDetailedHelp(commandType, context);
+				if (!string.IsNullOrEmpty(details))
+				{
+					writer.WriteLine().WriteHeading("Details").WriteLine().WriteLine(string.Format(details, commandName));
+				}
+			}
+
+			if (0 != (options & CommandHelpOptions.Details))
+			{
+				var examples = GetExamples(typeDescr, context);
+				if (examples.Count > 0)
+				{
+					writer.WriteLine().WriteHeading("Examples");
+
+					int index = 0;
+					foreach (var example in examples)
+					{
+						index++;
+
+						writer.WriteLine();
+						writer.WriteSubheading($"Example {index} - {example.Caption}").WriteLine();
+						writer.BeginCodeBlock();
+						writer.WriteLine(example.CommandLine.Replace("{0}", commandName) /* Use a simple Replace call instead of string.Format so that other { and } don't need to be escaped. string.Format(example.CommandLine, commandName) */ );
+						writer.EndCodeBlock();
+
+						if (!string.IsNullOrEmpty(example.Explanation))
+							writer.WriteLine(example.Explanation!.Replace("{0}", commandName));
+					}
+				}
+			}
+		}
+
+
+		private static IList<ExampleAttribute> GetExamples(ICustomTypeDescriptor typeDescr, CommandMetadataContext context)
+		{
+			var attrs = typeDescr.GetAttributes();
+			var examples = attrs.OfType<ExampleAttribute>().ToList();
+			return examples;
+		}
+
+		private static void BuildParametersTable(TextTable table, IEnumerable<ParameterMetadata> parameters, HashSet<string> allParamNames, object? commandInstance, CommandMetadataContext context)
+		{
+			foreach (var param in parameters)
+			{
+				var tr = table.AddRow();
+				if (param.IsPositional)
+				{
+					tr.AddCell(FormattedTextFactory.Builder().Text("<").Italic(param.Name).Text(">").Build());
+					tr.AddCell();
+				}
+				else
+				{
+					{
+						var b = FormattedTextFactory.Builder();
+						{
+							var initial = param.Name.Substring(0, 1);
+							if (1 == allParamNames.Count(r => r.StartsWith(initial, StringComparison.OrdinalIgnoreCase)))
+								b.Bold($"-{initial}").Text(", ");
+							else
+								b.Text("    ");
+						}
+
+						tr.AddCell(b.Bold('-' + param.Name).Build());
+					}
+
+					if (param.Aliases.Length > 0)
+					{
+						string alias0 = "-" + param.Aliases[0];
+						tr.AddCell(FormattedTextFactory.Bold(alias0));
+					}
+					else
+						tr.AddCell();
+				}
+
+				if (!string.IsNullOrEmpty(param.Placeholder))
+					tr.AddCell(FormattedTextFactory.Builder().Text("<").Italic(param.Placeholder).Text(">").Build());
+				else
+					tr.AddCell();
+
+				tr.AddCell(param.Description);
+
+				if (param.HasDefaultValue)
+				{
+					table.AddRow(null, null, null, "  Default: " + (param.RawDefaultValue ?? "<null>"));
+				}
+
+				if (param.HasValueList)
+				{
+					var valueList = param.GetValueList(commandInstance, context);
+					if (valueList != null)
+					{
+						table.AddRow();
+						var pvHeaderRow = table.AddRow((TextTableCell?)null, null, null);
+						pvHeaderRow.AddCell("Possible values:");
+
+						foreach (var value in valueList)
+						{
+							var valueRow = table.AddRow((TextTableCell?)null, null, null);
+							valueRow.AddCell(new TextTableCell(FormattedTextFactory.Builder()
+								.Text("  ")
+								.Bold(value?.ToString() ?? string.Empty).Build()));
+						}
+
+						table.AddRow();
+					}
+				}
+			}
+		}
+
+		/// <summary>
+		/// Runs the command implementation.
+		/// </summary>
+		/// <param name="cancellationToken">Cancellation token that may be used to cancel the operation</param>
+		/// <returns>Result code of the command execution.</returns>
+		/// <remarks>
+		/// This method is called by <see cref="InvokeAsync(string, Token[], int, CancellationToken)"/>
+		/// after parsing and setting parameters.
+		/// </remarks>
+		protected abstract Task<int> RunAsync(CancellationToken cancellationToken);
+
+		/// <summary>
+		/// Gets the metadata describing the command and its parameters.
+		/// </summary>
+		/// <param name="commandType">Type implement a command (must inherit <see cref="Command"/>)</param>
+		/// <returns></returns>
+		/// <exception cref="ArgumentNullException"><paramref name="commandType"/> is <see langword="null"/></exception>
+		/// <exception cref="ArgumentException"><paramref name="commandType"/> does not inherit <see cref="Command"/></exception>
+		public static CommandMetadata GetCommandMetadata(Type commandType, CommandMetadataContext context)
+		{
+			return new CommandMetadata(context.Resolver.GetDescriptor(commandType), commandType, context);
+		}
+
+		/// <summary>
+		/// Gets the metadata describing the command and its parameters.
+		/// </summary>
+		/// <returns></returns>
+		public CommandMetadata GetCommandMetadata(CommandMetadataContext context)
+		{
+			return new CommandMetadata(context.Resolver.GetDescriptor(this), this.GetType(), context);
+		}
+
+		/// <summary>
+		/// Gets a <see cref="TypeConverter"/> for a parameter type.
+		/// </summary>
+		/// <param name="paramType">Parameter type</param>
+		/// <returns>A <see cref="TypeConverter"/> that can convert to <paramref name="paramType"/>.</returns>
+		/// <exception cref="ArgumentException"><paramref name="paramType"/> does not have a <see cref="TypeConverter"/>.</exception>
+		public static TypeConverter GetScalarParamConverter(Type paramType, PropertyDescriptor? property = null)
+		{
+			var converterAttr = property?.GetCustomAttribute<TypeConverterAttribute>();
+			if (converterAttr is not null)
+			{
+				var converterType = Type.GetType(converterAttr.ConverterTypeName);
+				var converter_ = (TypeConverter)Activator.CreateInstance(converterType);
+				return converter_;
+			}
+
+			if (paramType.IsEnum)
+				// The built-in enum converter is overly strict and cannot handle undefined values like 0.
+				return new EnumConverter(paramType);
+
+			var converter = TypeDescriptor.GetConverter(paramType);
+			if (converter != null)
+			{
+				if (converter.GetType() == typeof(TypeConverter))
+				{
+					// This is the default converter, which probably won't work
+					if (paramType == typeof(EndPoint))
+					{
+						return new EndPointConverter();
+					}
+				}
+				return converter;
+			}
+
+			TypeCode typeCode = Type.GetTypeCode(paramType);
+			switch (typeCode)
+			{
+				case TypeCode.Boolean: return Singleton.SingleInstance<BooleanConverter>();
+				case TypeCode.Char: return Singleton.SingleInstance<CharConverter>();
+				case TypeCode.SByte: return new IntegerConverter<sbyte>(Singleton.SingleInstance<SByteConverter>(), sbyte.Parse, 8);
+				case TypeCode.Byte: return new IntegerConverter<byte>(Singleton.SingleInstance<ByteConverter>(), byte.Parse, 8);
+				case TypeCode.Int16: return new IntegerConverter<short>(Singleton.SingleInstance<Int16Converter>(), short.Parse, 16);
+				case TypeCode.UInt16: return new IntegerConverter<ushort>(Singleton.SingleInstance<UInt16Converter>(), ushort.Parse, 16);
+				case TypeCode.Int32: return new IntegerConverter<int>(Singleton.SingleInstance<Int32Converter>(), int.Parse, 32);
+				case TypeCode.UInt32: return new IntegerConverter<uint>(Singleton.SingleInstance<UInt32Converter>(), uint.Parse, 32);
+				case TypeCode.Int64: return new IntegerConverter<long>(Singleton.SingleInstance<Int64Converter>(), long.Parse, 64);
+				case TypeCode.UInt64: return new IntegerConverter<ulong>(Singleton.SingleInstance<UInt64Converter>(), ulong.Parse, 64);
+				case TypeCode.Single: return Singleton.SingleInstance<SingleConverter>();
+				case TypeCode.Double: return Singleton.SingleInstance<DoubleConverter>();
+				case TypeCode.Decimal: return Singleton.SingleInstance<DecimalConverter>();
+				case TypeCode.DateTime: return Singleton.SingleInstance<DateTimeConverter>();
+				case TypeCode.String: return Singleton.SingleInstance<StringConverter>();
+				case TypeCode.Empty:
+				//case TypeCode.DBNull:
+				default:
+					throw new ArgumentException(string.Format(Messages.Cli_UnsupportedParamType, paramType.FullName));
+			}
+		}
+
+		private Dictionary<ParameterMetadata, object?> Parse(IList<Token> tokens, int startIndex, CommandMetadata metadata)
+		{
+			Dictionary<ParameterMetadata, object?> setParams = new();
+			var context = this.Context;
+
+			foreach (var group in metadata.ParameterGroups)
+			{
+				if (0 != (group.Options & ParameterGroupOptions.AlwaysInstantiate))
+				{
+					group.GetGroupObject(this, this);
+				}
+			}
+
+			var fileAccess = this.Services.GetService<IFileAccess>();
+			bool isFinalPos = false;
+			bool endOfOptions = false;
+
+			ParameterConverterContext converterContext = new ParameterConverterContext(this, null, ParameterConverterContextOptions.None);
+			int positionalIndex = 0;
+			for (int i = startIndex; i < tokens.Count; i++)
+			{
+				var token = tokens[i];
+				if (!endOfOptions && token.OriginalText == "--'")
+				{
+					endOfOptions = true;
+					continue;
+				}
+
+				string tokenText = token.Text;
+				bool paramByName;
+
+				ParameterMetadata parameter;
+				bool isLastParam = false;
+				bool isFileInsertion = false;
+				string? argText;
+				if ((tokenText.Length > 0) && (token.OriginalText.StartsWith("-")))
+				{
+					// This is a named parameter
+
+					isFileInsertion = tokenText.EndsWith("^");
+					if (isFileInsertion)
+						tokenText = tokenText.Substring(0, tokenText.Length - 1);
+
+					string paramName;
+
+					{
+						int sep = tokenText.IndexOf(':');
+						if (sep > 0)
+						{
+							argText = tokenText.Substring(sep + 1);
+							paramName = tokenText.Substring(1, sep - 1);
+						}
+						else
+						{
+							paramName = tokenText.Substring(1);
+							argText = null;
+						}
+					}
+
+					// Determine parameter
+					if (!metadata.ParametersByName.TryGetValue(paramName, out parameter))
+					{
+						var matches = metadata.ParametersByName.Where(r => r.Key.StartsWith(paramName, StringComparison.OrdinalIgnoreCase)).ToArray();
+
+						if (matches.Length == 1)
+							parameter = matches[0].Value;
+						else
+							throw new UnrecognizedParameterException(paramName);
+					}
+
+					paramByName = true;
+
+					if (!parameter.IsSwitch && argText == null)
+					{
+						// TODO: Support list arguments after :
+
+						i++;
+						if (i >= tokens.Count)
+							throw new ParameterSyntaxException(paramName, string.Format(Messages.Cli_MissingParamValue, paramName));
+						token = tokens[i];
+						argText = token.Text;
+					}
+					else
+					{
+						// Don't consume argument
+					}
+				}
+				else
+				{
+					// Positional parameter
+
+					argText = tokenText;
+					paramByName = false;
+
+					do
+					{
+						isFinalPos = positionalIndex > metadata.PositionalParameters.Count;
+						if (positionalIndex >= metadata.PositionalParameters.Count)
+							throw new SyntaxException(Messages.Cli_TooManyArguments + ": " + argText);
+						else
+							parameter = metadata.PositionalParameters[positionalIndex];
+
+						isLastParam = positionalIndex == metadata.PositionalParameters.Count - 1;
+
+						positionalIndex++;
+					} while (setParams.ContainsKey(parameter));
+				}
+
+				object? argValue;
+				if (parameter.IsSwitch)
+				{
+					argValue = argText == null ? new SwitchParam(SwitchParamFlags.Specified | SwitchParamFlags.Set) : SwitchParam.Parse(argText, false);
+				}
+				else
+				{
+					if (parameter.IsList)
+					{
+						List<object?> listArgs = new List<object?>();
+
+						// Continue reading list parameters
+						bool listCont = false;
+						do
+						{
+							token = tokens[i];
+
+							if (!listCont && !endOfOptions && token.Text.StartsWith("-"))
+							{
+								i--;
+								break;
+							}
+
+							argText = token.Text;
+
+							listCont = token.OriginalText.EndsWith(",");
+							if (listCont)
+								// Trim trailing ,
+								argText = argText.Substring(0, argText.Length - 1);
+
+							try
+							{
+								converterContext.Parameter = parameter;
+
+								if (isFileInsertion)
+								{
+									if (fileAccess is null)
+										throw new ParameterSyntaxException(parameter.Name, $"Parameter {parameter.Name} received file expansion argument, but the command does not have file system access.");
+
+									foreach (var line in fileAccess.ReadLinesFrom(new FileSpec(argText)))
+									{
+										if (string.IsNullOrEmpty(line))
+											continue;
+
+										argValue = parameter.ConvertValue(line, converterContext);
+										listArgs.Add(argValue);
+									}
+								}
+								else
+								{
+									argValue = parameter.ConvertValue(argText, converterContext);
+									listArgs.Add(argValue);
+								}
+							}
+							catch (Exception ex)
+							{
+								throw new ParameterSyntaxException(parameter.Name, string.Format(Messages.Cli_ArgFormatError, parameter.Name, tokenText, ex.Message), ex);
+							}
+						} while ((listCont || (!paramByName && isLastParam && parameter.IsList)) && ((++i) < tokens.Count));
+
+						Array array = Array.CreateInstance(parameter.ElementType, listArgs.Count);
+						for (int j = 0; j < array.Length; j++)
+						{
+							array.SetValue(listArgs[j], j);
+						}
+						argValue = array;
+					}
+					else
+					{
+						try
+						{
+							converterContext.Parameter = parameter;
+							argValue = argText != null ? parameter.ConvertValue(argText, converterContext) : null;
+						}
+						catch (Exception ex)
+						{
+							throw new ParameterSyntaxException(parameter.Name, string.Format(Messages.Cli_ArgFormatError, parameter.Name, tokenText, ex.Message), ex);
+						}
+					}
+				}
+
+				if (argValue != UnsetValue)
+				{
+					if (setParams.ContainsKey(parameter))
+						throw new ParameterSyntaxException(parameter.Name, $"Parameter {parameter.Name} is specified more than once.");
+					setParams.Add(parameter, argValue);
+				}
+			}
+
+			return setParams;
+		}
+
+		private void ImportEnvDefaults(CommandMetadata metadata, Dictionary<ParameterMetadata, object?> setParams, ICommandContext? context)
+		{
+			ParameterConverterContext converterContext = new ParameterConverterContext(this, null, ParameterConverterContextOptions.None);
+			foreach (var param in metadata.Parameters)
+			{
+				if (!setParams.ContainsKey(param))
+				{
+					object? envValue = null;
+					if (param.EnvironmentVariable is not null)
+						envValue = context?.GetVariable(param.EnvironmentVariable);
+					if (envValue is null)
+					{
+						var envKey = $"TITANIS_DEFAULT_" + param.Name.ToUpper();
+						envValue = context?.GetVariable(envKey);
+					}
+					if (envValue is not null)
+					{
+						if (param.IsList)
+						{
+							Array arrDefault;
+							if (envValue is string str)
+							{
+								var defaultTokens = CommandLineParser.Tokenize(str);
+								arrDefault = defaultTokens;
+							}
+							else if (envValue is Array arr)
+							{
+								arrDefault = arr;
+							}
+							else
+							{
+								arrDefault = new object[] { envValue };
+							}
+
+							Array arrCoerced = Array.CreateInstance(param.ElementType, arrDefault.Length);
+							bool failed = false;
+							for (int i = 0; i < arrDefault.Length; i++)
+							{
+								var defaultElem = arrDefault.GetValue(i);
+
+								try
+								{
+									this.WriteMessage($"Importing default for '{param.Name}': {defaultElem}");
+									converterContext.Parameter = param;
+									var coerced = param.ConvertValue(defaultElem, converterContext);
+									arrCoerced.SetValue(coerced, i);
+								}
+								catch (Exception ex)
+								{
+									failed = true;
+									this.WriteWarning($"Failed to parse default value '{envValue}' for parameter '{param.Name}': {ex.Message}");
+								}
+							}
+
+							if (!failed)
+							{
+								setParams.Add(param, arrCoerced);
+							}
+						}
+						else
+						{
+							try
+							{
+								this.WriteMessage($"Importing default for '{param.Name}': {envValue}");
+								converterContext.Parameter = param;
+								var coerced = param.ConvertValue(envValue, converterContext);
+								setParams.Add(param, coerced);
+							}
+							catch (Exception ex)
+							{
+								this.WriteWarning($"Failed to parse default value '{envValue}' for parameter '{param.Name}': {ex.Message}");
+							}
+						}
+					}
+				}
+			}
+		}
+
+		private static object UnsetValue = new object();
+
+		void ApplyValues(
+			Dictionary<ParameterMetadata, object?> setParams,
+			ICommandContext context,
+			CommandMetadata metadata
+			)
+		{
+			foreach (var paramEntry in setParams)
+			{
+				var argValue = paramEntry.Value;
+				paramEntry.Key.SetValue(this, argValue);
+			}
+
+			{
+				List<string>? missingParamNames = null;
+				foreach (var param in metadata.Parameters)
+				{
+					if (!setParams.ContainsKey(param))
+					{
+						if (param.IsMandatory)
+							(missingParamNames ??= new()).Add(param.Name);
+						else if (param.HasDefaultValue)
+							param.SetValue(this, param.DefaultValue);
+					}
+				}
+
+				if (missingParamNames is not null)
+				{
+					foreach (var par in setParams)
+					{
+						this.WriteDiagnostic($"Parsed parameter '{par.Key}': {par.Value}");
+					}
+					throw new MissingParametersException(missingParamNames.ToArray());
+				}
+			}
+		}
+
+		#region Callback support
+		public virtual TCallback? GetCallback<TCallback>()
+			where TCallback : class
+		{
+			if (this is TCallback callback)
+				return callback;
+			else return null;
+		}
+		#endregion
+	}
+}
