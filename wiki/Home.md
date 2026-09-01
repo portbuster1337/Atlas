@@ -25,4 +25,3 @@ atlas ldap dc01.atlas.local -d ATLAS.LOCAL -u admin -p 'Password1!' --bloodhound
 atlas kerberos dc01.atlas.local -d ATLAS.LOCAL -UserList users.txt
 ```
 
-Next: **SMB**, **LDAP**, **Kerberos / WMI / DCSync** – see `docs/wiki/*.md` for technique details.
