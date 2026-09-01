@@ -16,7 +16,6 @@ internal sealed partial class Program : MultiCommand
 		=> RunProgramAsync<Program>(NormalizeArgs(args));
 
 	/// <summary>
-	/// Rewrites <c>--flag</c> to <c>-flag</c> so NetExec-style double-dash
 	/// parameters work alongside Titanis's single-dash syntax.
 	/// </summary>
 	internal static string[] NormalizeArgs(string[] args)

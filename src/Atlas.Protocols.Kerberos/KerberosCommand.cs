@@ -13,7 +13,6 @@ using Titanis.Winterop.Security;
 namespace Atlas.Protocols;
 
 /// <summary>
-/// NetExec-style Kerberos host: user enumeration and pre-auth checks against
 /// a KDC, built on Titanis.Security.Kerberos.
 /// </summary>
 [Description("Interacts with KDCs (user enumeration, pre-auth checks)")]

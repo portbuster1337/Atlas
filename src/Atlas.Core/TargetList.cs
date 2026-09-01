@@ -3,7 +3,6 @@ using System.Net;
 namespace Atlas;
 
 /// <summary>
-/// Parses NetExec-style target specifications:
 /// single host/IP, CIDR, last-octet or full-IP ranges, comma lists, and <c>@file</c> references.
 /// </summary>
 public static class TargetList

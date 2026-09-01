@@ -7,7 +7,6 @@ using Titanis.Smb2;
 namespace Atlas.Protocols.Smb.Modules;
 
 /// <summary>
-/// Recursively walks readable shares and lists files, NetExec spider-style.
 /// Options: depth=N (default 2), maxfiles=N (default 100), match=PATTERN (substring, case-insensitive)
 /// </summary>
 public sealed class SmbSpiderModule : AtlasModule<Smb2Client>

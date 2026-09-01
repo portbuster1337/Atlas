@@ -10,7 +10,6 @@ namespace Atlas.Protocols.Smb.Modules;
 
 /// <summary>
 /// Enumerates members of the local Administrators group (BUILTIN alias RID 544)
-/// via SAMR, NetExec-style.
 /// </summary>
 public sealed class SmbLocalAdminsModule : AtlasModule<Smb2Client>
 {

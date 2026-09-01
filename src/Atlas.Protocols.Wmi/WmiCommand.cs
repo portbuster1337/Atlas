@@ -8,7 +8,6 @@ using Titanis.Msrpc.Mswmi;
 namespace Atlas.Protocols;
 
 /// <summary>
-/// NetExec-style WMI protocol host: authenticate against targets and optionally
 /// execute commands via Win32_Process.Create, built on Titanis DCOM/WMI.
 /// </summary>
 [Description("Interacts with WMI services (auth check, remote exec)")]
@@ -31,6 +30,15 @@ public sealed class WmiCommand : Command
 	[Parameter]
 	[Description("Working directory for the executed command")]
 	public string? WorkingDir { get; set; }
+
+	[Parameter]
+	[Alias("wmi-query")]
+	public string? WmiQuery { get; set; }
+
+	[Parameter]
+	[Alias("wmi-namespace")]
+	[Description("WMI namespace (default: root\\cimv2)")]
+	public string? WmiNamespace { get; set; }
 
 	[Parameter]
 	[DefaultValue(1)]
@@ -60,6 +68,9 @@ public sealed class WmiCommand : Command
 		{
 			context.LogError(nameof(this.TargetSpec), ex.Message);
 		}
+
+		if (this.WmiQuery is not null && this.Exec is not null)
+			context.LogError(nameof(this.WmiQuery), "--wmi-query and -x are mutually exclusive");
 	}
 
 	private bool AuthenticationRequired()
@@ -109,14 +120,62 @@ public sealed class WmiCommand : Command
 	{
 		WmiClient wmi = await this.ConnectAsync(host, cancellationToken).ConfigureAwait(false);
 
+		if (this.WmiQuery is not null)
+		{
+			string nsName = string.IsNullOrWhiteSpace(this.WmiNamespace) ? WmiClient.RootCimV2Namespace : this.WmiNamespace!;
+			var scope = await wmi.OpenNamespace(nsName, "en-US", cancellationToken).ConfigureAwait(false);
+			AtlasConsole.Info($"{host}:{WmiPort}", $"WQL query: {this.WmiQuery} (ns={nsName})");
+			var reader = await scope.ExecuteWqlQueryAsync(this.WmiQuery!, 20, cancellationToken).ConfigureAwait(false);
+			int count = 0;
+			while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+			{
+				var obj = reader.Current;
+				if (obj is null) continue;
+				count++;
+				var props = new List<string>();
+				if (obj is WmiInstanceObject inst)
+				{
+					foreach (var prop in inst.Properties)
+					{
+						string val = prop.Value?.ToString() ?? "";
+						string name = prop.ClassProperty?.Name ?? "unknown";
+						if (val.Length > 80) val = val[..80] + "...";
+						props.Add($"{name}={val}");
+					}
+				}
+				else if (obj is WmiClassObject cls)
+				{
+					foreach (var prop in cls.Properties)
+					{
+						string val = prop.DefaultValue?.ToString() ?? "";
+						string name = prop.Name ?? "unknown";
+						if (val.Length > 80) val = val[..80] + "...";
+						props.Add($"{name}={val}");
+					}
+				}
+				else
+				{
+					props.Add(obj.ToString() ?? "");
+				}
+				AtlasConsole.Info($"{host}:{WmiPort}", $"[{count}] {string.Join("; ", props)}");
+				if (count >= 100)
+				{
+					AtlasConsole.Info($"{host}:{WmiPort}", "Truncated at 100 results");
+					break;
+				}
+			}
+			AtlasConsole.Info($"{host}:{WmiPort}", $"WQL done: {count} object(s)");
+			return;
+		}
+
 		if (this.Exec is null)
 		{
 			AtlasConsole.Success($"{host}:{WmiPort}", "authenticated");
 			return;
 		}
 
-		var ns = await wmi.OpenNamespace(WmiClient.RootCimV2Namespace, "en-US", cancellationToken).ConfigureAwait(false);
-		var processClass = (WmiClassObject)await ns.GetObjectAsync("Win32_Process", cancellationToken).ConfigureAwait(false);
+		var ns2 = await wmi.OpenNamespace(WmiClient.RootCimV2Namespace, "en-US", cancellationToken).ConfigureAwait(false);
+		var processClass = (WmiClassObject)await ns2.GetObjectAsync("Win32_Process", cancellationToken).ConfigureAwait(false);
 
 		string cmdLine = this.Exec;
 		var args = new Dictionary<string, object?>();

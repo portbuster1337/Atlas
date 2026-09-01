@@ -8,19 +8,31 @@
 
 | Protocol | Capabilities |
 |---|---|
-| `smb` | Auth check (NTLM/Kerberos/anonymous), shares, users, groups, disks, sessions via SRVS/SAMR RPC; SAM & LSA secret dumping via Remote Registry; directory listing, get/put/mkdir/rm over SMB2/3 |
-| `kerberos` | User enumeration (AS-REQ classification), pre-auth / AS-REP roastable detection, Kerberoasting with hashcat-format output, Key List attack against RODCs |
-| `wmi` | Auth check via DCOM/WMI, remote command execution via `Win32_Process.Create` |
-| `ldap` | Auth check (SASL or RFC 4511 simple bind), paged subtree queries with attribute selection |
-| `dcsync` | Replicate credential material from a DC via [MS-DRSR] (`IDL_DRSGetNCChanges` + `EXOP_REPL_OBJ`) |
+| `smb` | Auth check (NTLM/Kerberos/anonymous), shares, users, groups, disks, sessions via SRVS/SAMR; SAM/LSA via Remote Registry; file ops over SMB2/3; `--pass-pol`/`--rid-brute`/`--gen-relay-list`/`--generate-krb5-file`/`--generate-hosts-file`; execution via `wmiexec` (`WmiClient`) / `smbexec` (`ScmClient`) |
+| `kerberos` | User enumeration, pre-auth/AS-REP detection, Kerberoasting, Key List attack |
+| `wmi` | Auth via DCOM/WMI, `Win32_Process.Create` or `--wmi-query` (`WQL`) |
+| `ldap` | Auth via SASL/simple bind, queries + flags (`--users`/`--trusted-for-delegation`/`--pass-pol`/`--get-sid` etc.), modules, `--bloodhound` (`-c`) to BloodHound CE `JSON`+`zip` |
+| `dcsync` | Replicate via [MS-DRSR] (`DRSGetNCChanges`) |
 
 ### Modules
 
 | Module | Protocol | Description |
 |---|---|---|
-| `spider` | smb | Recursive share crawler (`depth`, `maxfiles`, `match` options) |
+| `spider` | smb | Recursive share crawler (`depth`, `maxfiles`, `match`) |
 | `shareaccess` | smb | Per-share READ/WRITE access check |
-| `localadmins` | smb | Local Administrators group members via SAMR, names resolved through LSA |
+| `localadmins` | smb | Local Administrators via SAMR |
+| `gpp_password` | smb | Decrypts `cpassword` from `Groups.xml` etc. |
+| `gpp_autologin` | smb | `Registry.xml` autologon credentials |
+| `gpp_privileges` | smb | `GptTmpl.inf` privilege assignments |
+| `uac` / `wdigest` / `runasppl` / `install_elevated` | smb | Registry checks via `winreg` |
+| `spooler` | smb | Print Spooler status via `SCM` |
+| `keepass` / `rclone` / `winscp` / `mremoteng` / `vnc` etc. | smb | File hunters on shares |
+| `maq` | ldap | `ms-DS-MachineAccountQuota` |
+| `pre2k` | ldap | Pre-Windows 2000 computers (`UAC 4128`) |
+| `laps` | ldap | LAPS passwords |
+| `adcs` | ldap | AD CS enrollment services |
+| `subnets` | ldap | Sites/Subnets from Configuration NC |
+| `daclread` / `badsuccessor` / `certipy-find` etc. | ldap | LDAP enumeration via Titanis |
 
 Shared across all protocols:
 
@@ -75,10 +87,14 @@ atlas smb 10.0.0.5 -u admin -p pass -LsPath 'C$\Users'
 atlas smb 10.0.0.5 -u admin -p pass -GetFile 'C$\Windows\win.ini'
 atlas smb 10.0.0.5 -u admin -p pass -PutSource ./payload.bin -PutDest 'C$\Temp\payload.bin'
 
-# Modules
+# Modules and flags
 atlas smb 10.0.0.0/24 -u admin -p pass -M spider -mo 'depth=3,maxfiles=50,match=.conf'
-atlas smb 10.0.0.0/24 -u admin -p pass -M shareaccess
-atlas smb 10.0.0.5 -u admin -p pass -M localadmins
+atlas smb 10.0.0.0/24 -u admin -p pass -M shareaccess -M gpp_password
+atlas smb 10.0.0.5 -u admin -p pass -M localadmins -M uac
+
+# Flags (NetExec-like)
+atlas smb 10.0.0.5 -u admin -p pass --pass-pol --rid-brute 2000
+atlas smb 10.0.0.5 --Anonymous --gen-relay-list relay.txt --generate-krb5-file krb5.conf
 
 # Password spray
 atlas smb 10.0.0.0/24 -UserList users.txt -PassList 'Password1!,Summer2024!'

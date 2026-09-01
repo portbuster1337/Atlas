@@ -7,6 +7,12 @@
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<RootNamespace>Atlas</RootNamespace>
-		<InvariantGlobalization>false</InvariantGlobalization>
+		<InvariantGlobalization>true</InvariantGlobalization>
+		<PublishTrimmed>true</PublishTrimmed>
+		<TrimMode>partial</TrimMode>
+		<EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+		<DebugType>None</DebugType>
+		<DebugSymbols>false</DebugSymbols>
+		<PublishReadyToRun>false</PublishReadyToRun>
 	</PropertyGroup>
 </Project>

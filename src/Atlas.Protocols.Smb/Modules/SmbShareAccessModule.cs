@@ -8,7 +8,6 @@ namespace Atlas.Protocols.Smb.Modules;
 
 /// <summary>
 /// Checks each share for read/write access by creating and deleting a temp file,
-/// NetExec "share enumeration with access check" style.
 /// </summary>
 public sealed class SmbShareAccessModule : AtlasModule<Smb2Client>
 {
@@ -55,7 +54,7 @@ public sealed class SmbShareAccessModule : AtlasModule<Smb2Client>
 		}
 		catch { }
 
-		string probe = $"ATLAS_{Guid.NewGuid():N}.txt";
+		string probe = $"__{Guid.NewGuid():N}.tmp";
 		try
 		{
 			Smb2CreateInfo create = new Smb2CreateInfo

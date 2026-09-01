@@ -16,7 +16,6 @@ namespace Atlas.Protocols;
 
 /// <summary>
 /// DCSync: replicates credential material for directory objects from a DC
-/// via [MS-DRSR], NetExec secretsdump-style.
 /// </summary>
 [Description("Replicates credentials from a domain controller (DCSync). Use the DC's FQDN for Kerberos; with an IP, provide -ud <domain> and NTLM creds.")]
 public sealed class DcsyncCommand : Command

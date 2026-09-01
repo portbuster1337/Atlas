@@ -3,7 +3,6 @@ using System.Text;
 namespace Atlas;
 
 /// <summary>
-/// NetExec-style console output: <c>[HH:mm:ss] [sev] host - message</c>.
 /// </summary>
 public static class AtlasConsole
 {
