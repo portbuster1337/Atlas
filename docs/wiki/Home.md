@@ -2,7 +2,7 @@
 
 ## Atlas
 
-Atlas (a.k.a Atlas) is a cross-platform network execution toolkit built on [TrustedSec's Titanis](https://github.com/trustedsec/Titanis) that helps automate assessing the security of *large* networks.
+Atlas is a cross-platform network execution toolkit built on [TrustedSec's Titanis](https://github.com/trustedsec/Titanis) that helps automate assessing the security of *large* networks.
 
 | Protocol | Capabilities |
 |---|---|
@@ -21,8 +21,8 @@ atlas smb 192.168.1.0/24 -u admin -p 'Password1!' --shares --users
 # LDAP BloodHound
 atlas ldap dc01.atlas.local -d ATLAS.LOCAL -u admin -p 'Password1!' --bloodhound -c All
 
-# Kerberos
+# Kerberos user enum
 atlas kerberos dc01.atlas.local -d ATLAS.LOCAL -UserList users.txt
 ```
 
-See sidebar for techniques.
+Next: **SMB**, **LDAP**, **Kerberos / WMI / DCSync** – see `docs/wiki/*.md` for technique details.
