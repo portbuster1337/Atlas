@@ -195,7 +195,7 @@ namespace Titanis.Security.Kerberos
 
 		public string? Comment { get; set; }
 
-		// ATLAS-PATCH: keys returned via KERB-KEY-LIST-REP ([MS-KILE] § 2.2.12), if any
+		// keys returned via KERB-KEY-LIST-REP ([MS-KILE] § 2.2.12), if any
 		public (int EType, byte[] Key)[]? KeyListKeys { get; internal set; }
 
 		[DisplayName("Client name")]

@@ -15,4 +15,8 @@
 		<DebugSymbols>false</DebugSymbols>
 		<PublishReadyToRun>false</PublishReadyToRun>
 	</PropertyGroup>
+	<ItemGroup>
+		<!-- Reflection-loaded modules reference this only via late-bound code; keep it -->
+		<TrimmerRootAssembly Include="System.Diagnostics.FileVersionInfo" />
+	</ItemGroup>
 </Project>

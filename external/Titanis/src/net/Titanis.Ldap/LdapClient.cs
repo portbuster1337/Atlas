@@ -187,7 +187,7 @@ namespace Titanis.Ldap
 			return ldap;
 		}
 
-		// ATLAS-PATCH: RFC 4511 simple bind
+		// RFC 4511 simple bind
 		public async Task BindSimple(string distinguishedName, string password, CancellationToken cancellationToken)
 		{
 			await this._channel.BindSimple(distinguishedName, password, cancellationToken).ConfigureAwait(false);

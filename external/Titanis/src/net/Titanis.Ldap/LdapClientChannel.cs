@@ -18,7 +18,7 @@ namespace Titanis.Ldap
 		private AuthClientContext? _authContext;
 		protected override AuthContext? AuthContext => this._authContext;
 
-		// ATLAS-PATCH: RFC 4511 simple bind support
+		// RFC 4511 simple bind support
 		internal async Task<LdapResponse> BindSimple(string? distinguishedName, string? password, CancellationToken cancellationToken)
 		{
 			var resp = await this.SendRequest(new LDAPMessage_ProtocolOp()

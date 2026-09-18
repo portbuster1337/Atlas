@@ -449,7 +449,7 @@ namespace Titanis.Msrpc.Mswkst
 		public Task<IList<ShareInfo>> GetStickyShares(string serverName, ShareInfoLevel level, int bufferSize, CancellationToken cancellationToken)
 			=> EnumShares(serverName, level, bufferSize, this._proxy.NetrShareEnumSticky, cancellationToken);
 
-		// ATLAS-PATCH: disk enumeration (NetrServerDiskEnum, level 0)
+		// disk enumeration (NetrServerDiskEnum, level 0)
 		public async Task<IList<string>> GetDisks(string serverName, int bufferSize, CancellationToken cancellationToken)
 		{
 			var disks = new List<string>();

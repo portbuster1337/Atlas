@@ -1,0 +1,17 @@
+namespace Atlas.Protocols.Smb.Modules;
+
+internal sealed record CvePatchInfo(string Alias, bool DcOnly, string Message, string Exploitation, string? SigningMessage, (int Major, int Minor, int Build, int MinUbr)[] Patches);
+
+internal static class SmbEnumCveData
+{
+	public static readonly (string Cve, CvePatchInfo Info)[] Cves = new[]
+	{
+		("CVE-2025-33073", new CvePatchInfo("NTLM reflection", false, "Relay possible from SMB to any protocol", "https://www.synacktiv.com/en/publications/ntlm-reflection-is-dead-long-live-ntlm-reflection-an-in-depth-analysis-of-cve-2025", "can relay SMB to other protocols except SMB", new[] { (10, 0, 10240, 21034), (10, 0, 14393, 8148), (10, 0, 17763, 7434), (10, 0, 19044, 5965), (10, 0, 20348, 3807), (10, 0, 22621, 5472), (10, 0, 25398, 1665), (10, 0, 26100, 4270) })),
+		("CVE-2025-58726", new CvePatchInfo("Ghost SPN", false, "Relay possible from SMB using Ghost SPN for Kerberos reflection", "https://www.semperis.com/blog/exploiting-ghost-spns-and-kerberos-reflection-for-smb-server-privilege-elevation/", "Relay possible from SMB using Ghost SPN (non HOST/CIFS) for Kerberos reflection to other protocols except SMB", new[] { (6, 0, 6003, 23571), (6, 1, 7601, 27974), (6, 2, 9200, 25722), (6, 3, 9600, 22824), (10, 0, 10240, 21161), (10, 0, 14393, 8519), (10, 0, 17763, 7919), (10, 0, 19044, 6456), (10, 0, 20348, 4294), (10, 0, 22621, 6060), (10, 0, 25398, 1913), (10, 0, 26100, 6899), (10, 0, 26200, 6899) })),
+		("CVE-2025-54918", new CvePatchInfo("NTLM MIC Bypass", true, "Note that without CVE-2025-33073 only Windows Server 2025 is exploitable", "https://yousofnahya.medium.com/hands-on-exploitation-of-cve-2025-54918-cf376ebb40e1", null, new[] { (6, 0, 6003, 23529), (6, 1, 7601, 27929), (6, 2, 9200, 25675), (6, 3, 9600, 22774), (10, 0, 10240, 21128), (10, 0, 14393, 8422), (10, 0, 17763, 7792), (10, 0, 19044, 6332), (10, 0, 20348, 4171), (10, 0, 22621, 5909), (10, 0, 22631, 5909), (10, 0, 26100, 6508) })),
+		("CVE-2025-53779", new CvePatchInfo("BadSuccessor", true, "Escalation to Domain Admin possible via dMSA Kerberos abuse", "https://www.akamai.com/blog/security-research/abusing-dmsa-for-privilege-escalation-in-active-directory", null, new[] { (10, 0, 26100, 4851) })),
+		("CVE-2024-49019", new CvePatchInfo("ESC15 / EKUwu", false, "If host is an AD CS / CA server, it may be vulnerable to ESC15", "https://trustedsec.com/blog/ekuwu-not-just-another-ad-cs-esc", null, new[] { (6, 0, 6003, 22966), (6, 1, 7601, 27415), (6, 2, 9200, 25165), (6, 3, 9600, 22267), (10, 0, 14393, 7515), (10, 0, 17763, 6532), (10, 0, 20348, 2849), (10, 0, 25398, 1251), (10, 0, 26100, 2314) })),
+		("CVE-2026-54121", new CvePatchInfo("Certighost", false, "If host is an AD CS / CA server, it may be vulnerable to Certighost", "https://gist.github.com/H0j3n/a5ef2609b5f2944ac2390a191a534c26", null, new[] { (6, 2, 9200, 26226), (6, 3, 9600, 23291), (10, 0, 14393, 9339), (10, 0, 17763, 9020), (10, 0, 20348, 5386), (10, 0, 26100, 33158) })),
+		("CVE-2026-27912", new CvePatchInfo("ResetNightmare", true, "Password reset of any account possible via Kerberos change password abuse", "https://www.semperis.com/blog/identity-crisis-novel-vulnerabilities-leading-to-kerberos-downgrade-dos-and-full-domain-takeover/", null, new[] { (6, 2, 9200, 26026), (6, 3, 9600, 23132), (10, 0, 14393, 9060), (10, 0, 17763, 8644), (10, 0, 20348, 5020), (10, 0, 25398, 2274), (10, 0, 26100, 32690) })),
+	};
+}

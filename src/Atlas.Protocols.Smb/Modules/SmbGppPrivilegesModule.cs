@@ -141,7 +141,7 @@ public sealed class SmbGppPrivilegesModule : AtlasModule<Smb2Client>
 						AtlasConsole.Info($"{ctx.Host}:445", $"(gpp_privileges) Found {share}\\{child}");
 					}
 				}
-				else if (!e.IsReparsePoint && level < maxDepth)
+				else if (level < maxDepth) // follow DFSR junctions (domain folder is a reparse point)
 					queue.Enqueue(child);
 				visited++;
 				if (visited >= maxVisit) break;

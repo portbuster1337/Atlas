@@ -8,13 +8,15 @@
 
 | Protocol | Capabilities |
 |---|---|
-| `smb` | Auth check (NTLM/Kerberos/anonymous), shares, users, groups, disks, sessions via SRVS/SAMR; SAM/LSA via Remote Registry; file ops over SMB2/3; `--pass-pol`/`--rid-brute`/`--gen-relay-list`/`--generate-krb5-file`/`--generate-hosts-file`; execution via `wmiexec` (`WmiClient`) / `smbexec` (`ScmClient`) |
-| `kerberos` | User enumeration, pre-auth/AS-REP detection, Kerberoasting, Key List attack |
-| `wmi` | Auth via DCOM/WMI, `Win32_Process.Create` or `--wmi-query` (`WQL`) |
-| `ldap` | Auth via SASL/simple bind, queries + flags (`--users`/`--trusted-for-delegation`/`--pass-pol`/`--get-sid` etc.), modules, `--bloodhound` (`-c`) to BloodHound CE `JSON`+`zip` |
-| `dcsync` | Replicate via [MS-DRSR] (`DRSGetNCChanges`) |
+| `smb` | Auth check (NTLM/Kerberos/anonymous), shares, users, groups, disks, sessions via SRVS/SAMR; SAM/LSA via Remote Registry; file ops over SMB2/3; `--pass-pol`/`--rid-brute`/`--gen-relay-list`/`--generate-krb5-file`/`--generate-hosts-file`/`--generate-tgt`; snapshots/streams/open-files/NICs; group members, LSA SID/name lookup, registry query, services, logged-on users, task list/kill, EFS coercion; execution via `wmiexec` / `smbexec` / `mmcexec` (MMC DCOM) |
+| `kerberos` | User enumeration, pre-auth/AS-REP detection, Kerberoasting, Key List attack, ticket forging (golden/silver), TGT request, password change, S4U2Self/Proxy (`-S4UserName`) |
+| `wmi` | Auth via DCOM/WMI, `Win32_Process.Create` (`-x`/`-X`) or `--wmi-query` (`WQL`), namespace listing, StdRegProv registry, DCOM method invoke, EPM endpoint listing |
+| `ldap` | Auth via SASL/simple bind, queries + flags (`--users`/`--trusted-for-delegation`/`--pass-pol`/`--get-sid` etc.), `--kerberoasting`, write ops (`-AddUser`/`-AddComputer`/`-Delete`/`-Modify`/`-SetPassword`), modules, `--bloodhound` (`-c`) to BloodHound CE `JSON`+`zip` |
+| `dcsync` | Replicate via [MS-DRSR] (`DRSGetNCChanges`): single objects, full `--ntds` NC sync, topology (`-DcInfo`/`-ListDomains`/`-ListSites`/`-ListRoles`/`-ListPartitions`/`-ListGcs`/`-Neighbors`/`-CrackName`) |
 
-### Modules
+> Flag style follows NetExec where possible (`--shares`, `--users`, `--pass-pol`, `--rid-brute`, `--local-groups`, `-d` domain, `-H` hash, `--kdcHost`, `-M`/`-o`/`-L` modules). Single-dash Titanis spellings (`-Shares`, `-ud`, `-NtlmHash`) keep working. Note: `-x`/`-X` can't coexist (case-insensitive), so PowerShell exec is `-ps`; `-d` is the domain everywhere including `kerberos` (realm falls back to it).
+
+### Modules (74: 48 smb + 26 ldap; `atlas <proto> -L` lists them)
 
 | Module | Protocol | Description |
 |---|---|---|
@@ -27,12 +29,26 @@
 | `uac` / `wdigest` / `runasppl` / `install_elevated` | smb | Registry checks via `winreg` |
 | `spooler` | smb | Print Spooler status via `SCM` |
 | `keepass` / `rclone` / `winscp` / `mremoteng` / `vnc` etc. | smb | File hunters on shares |
+| `ntlmv1` / `reg-winlogon` / `hyperv-host` | smb | `LmCompatibilityLevel`, Winlogon autologon, Hyper-V host |
+| `remote-uac` / `rdp` / `shadowrdp` | smb | Read/write remote UAC, RDP, RDP shadowing (`ACTION=...`) |
+| `reg-query` | smb | Query/set/delete registry values (`PATH=...`, `KEY=...`, `VALUE=...`, `TYPE=...`, `DELETE=True`) |
+| `enum_cve` | smb | Patch-level CVE check from build + UBR |
+| `enum_av` | smb | AV/EDR via LSA service names + `IPC$` pipes |
+| `enum_dns` / `get_netconnections` / `bitlocker` | smb | Via WMI (`root\MicrosoftDNS`, NIC configs, BitLocker) |
+| `putty` / `notepad` / `recent_files` / `recyclebin` / `snipped` | smb | PuTTY sessions + `.ppk`, Notepad tab-state, Recent LNKs, recycle bin, screenshots |
+| `lockscreendoors` | smb | Backdoored accessibility binaries via `FileDescription` |
+| `drop-sc` / `drop-library-ms` / `scuffy` / `slinky` | smb | Coercion lure drops + `CLEANUP=True` |
+| `webdav` / `smbghost` / `onelogon` / `sccm-recon6` | smb | WebClient check, SMBGhost probe, `VulnerableChannelAllowList`, SCCM recon |
+| `wcc` | smb | Windows security posture checklist (UAC/LSA/RDP/Defender/LAPS/NetBIOS/...) |
+| `change-password` | smb | Self-service password change via SAMR (`USER=...`, `OLDPASS=...`, `NEWPASS=...`) |
 | `maq` | ldap | `ms-DS-MachineAccountQuota` |
 | `pre2k` | ldap | Pre-Windows 2000 computers (`UAC 4128`) |
 | `laps` | ldap | LAPS passwords |
 | `adcs` | ldap | AD CS enrollment services |
 | `subnets` | ldap | Sites/Subnets from Configuration NC |
 | `daclread` / `badsuccessor` / `certipy-find` etc. | ldap | LDAP enumeration via Titanis |
+| `get-unixUserPassword` / `dns-nonsecure` | ldap | Unix passwords, nonsecure DNS zones |
+| `modify-group` / `add-computer` | ldap | Group membership, computer lifecycle (`NAME=...`, `DELETE=True`, ...) |
 
 Shared across all protocols:
 
@@ -145,9 +161,11 @@ atlas dcsync dc01.corp.local -d CORP.LOCAL -u admin -p pass jdoe '(adminCount=1)
 |---|---|
 | `-u`, `-UserName` | User name (`user`, `DOMAIN\user`, or `user@realm`) |
 | `-p`, `-Password` | Password |
-| `-NtlmHash` | NT hash (NTLM + Kerberos RC4) |
+| `-d`, `-ud`, `-UserDomain` | Domain (NetExec `-d`; doubles as Kerberos realm fallback) |
+| `-H`, `--hash`, `-NtlmHash` | NT hash (NTLM + Kerberos RC4) |
 | `-AesKey` | AES128/AES256 Kerberos key |
-| `-Kdc` | KDC endpoint for Kerberos |
+| `-Kdc`, `--kdcHost` | KDC endpoint for Kerberos |
+| `-S4UserName` | User to impersonate via S4U (Kerberos; needs `-Kdc`, companions `-Spn`/`-GenerateSt`/`-Self`) |
 | `-Tgt` / `-TicketCache` / `-Tickets` | `.kirbi` / `.ccache` ticket input |
 | `-Keytab` | keytab file |
 | `-UserCert` (+`-UserKey`) | PKINIT certificate authentication |

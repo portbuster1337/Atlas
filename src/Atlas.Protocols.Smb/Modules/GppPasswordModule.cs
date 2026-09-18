@@ -181,7 +181,7 @@ public sealed class GppPasswordModule : AtlasModule<Smb2Client>
 						AtlasConsole.Info($"{ctx.Host}:445", $"(gpp_password) Found {share}\\{child}");
 					}
 				}
-				else if (!e.IsReparsePoint && level < maxDepth)
+				else if (level < maxDepth) // follow DFSR junctions (domain folder is a reparse point)
 				{
 					queue.Enqueue(child);
 				}
