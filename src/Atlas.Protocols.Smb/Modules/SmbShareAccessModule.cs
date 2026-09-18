@@ -54,7 +54,7 @@ public sealed class SmbShareAccessModule : AtlasModule<Smb2Client>
 		}
 		catch { }
 
-		string probe = $"__{Guid.NewGuid():N}.tmp";
+		string probe = $"{Guid.NewGuid():N}.tmp";
 		try
 		{
 			Smb2CreateInfo create = new Smb2CreateInfo

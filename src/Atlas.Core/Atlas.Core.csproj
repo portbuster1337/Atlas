@@ -4,5 +4,6 @@
 		<ProjectReference Include="..\..\external\Titanis\src\base\Titanis.Core\Titanis.Core.csproj" />
 		<ProjectReference Include="..\..\external\Titanis\src\base\Titanis.Cli\Titanis.Cli.csproj" />
 		<ProjectReference Include="..\..\external\Titanis\src\net\Titanis.Net\Titanis.Net.csproj" />
+		<ProjectReference Include="..\..\external\Titanis\src\net\Titanis.Smb2\Titanis.Smb2.csproj" />
 	</ItemGroup>
 </Project>

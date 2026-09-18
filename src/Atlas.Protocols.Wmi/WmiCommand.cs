@@ -33,6 +33,11 @@ public sealed class WmiCommand : Command
 	public string? PsExec { get; set; }
 
 	[Parameter]
+	[Alias("no-output")]
+	[Description("Suppress command output retrieval (print PID only)")]
+	public SwitchParam NoOutput { get; set; }
+
+	[Parameter]
 	[Description("Working directory for the executed command")]
 	public string? WorkingDir { get; set; }
 
@@ -267,12 +272,15 @@ public sealed class WmiCommand : Command
 		var ns2 = await wmi.OpenNamespace(WmiClient.RootCimV2Namespace, "en-US", cancellationToken).ConfigureAwait(false);
 		var processClass = (WmiClassObject)await ns2.GetObjectAsync("Win32_Process", cancellationToken).ConfigureAwait(false);
 
+		string? stage = this.NoOutput.IsSet ? null : ExecOutput.NewStageFile();
 		string cmdLine = this.Exec is not null
-			? $"cmd.exe /Q /c \"{this.Exec}\""
-			: $"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"{this.PsExec!.Replace("\"", "\\\"")}\"";
+			? ExecOutput.WrapCmd(this.Exec, stage)
+			: ExecOutput.WrapPs(this.PsExec!, stage);
 		var args = new Dictionary<string, object?>();
 		if (!string.IsNullOrEmpty(this.WorkingDir))
 			args["CurrentDirectory"] = this.WorkingDir;
+		else
+			args["CurrentDirectory"] = @"C:\";
 		args["CommandLine"] = cmdLine;
 
 		WmiInstanceObject result = await processClass.InvokeMethodAsync("Create", args, cancellationToken).ConfigureAwait(false);
@@ -285,7 +293,24 @@ public sealed class WmiCommand : Command
 			return;
 		}
 
-		AtlasConsole.Success($"{host}:{WmiPort}", $"exec: PID={pid} - '{cmdLine}'");
+		if (stage is null)
+		{
+			AtlasConsole.Success($"{host}:{WmiPort}", $"exec: PID={pid} - '{cmdLine}'");
+			return;
+		}
+
+		await using var smb = this.RpcParameters.SmbParameters.CreateClient();
+		string? output = await ExecOutput.ReadAsync(smb, host, stage, cancellationToken).ConfigureAwait(false);
+		if (output is null)
+		{
+			AtlasConsole.Success($"{host}:{WmiPort}", $"exec: PID={pid} (no output retrieved) - '{cmdLine}'");
+			return;
+		}
+		if (output.Length == 0)
+			AtlasConsole.Info($"{host}:{WmiPort}", $"exec: PID={pid} (no output)");
+		else
+			foreach (var line in output.Split('\n'))
+				AtlasConsole.Info($"{host}:{WmiPort}", $"exec: {line.TrimEnd('\r')}");
 	}
 
 	private async Task ListNamespacesAsync(WmiClient wmi, string host, CancellationToken cancellationToken)

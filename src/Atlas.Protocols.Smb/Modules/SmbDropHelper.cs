@@ -33,7 +33,7 @@ internal static class SmbDropHelper
 
 	private static async Task<bool> IsWritableAsync(AtlasModuleContext<Smb2Client> ctx, string share, CancellationToken ct)
 	{
-		string probe = $"__{Guid.NewGuid():N}.tmp";
+		string probe = $"{Guid.NewGuid():N}.tmp";
 		try
 		{
 			var create = new Smb2CreateInfo
