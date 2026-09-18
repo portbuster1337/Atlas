@@ -906,7 +906,7 @@ public sealed class SmbCommand : Command
 				WmiClient wmi = await WmiClient.ConnectTo(workstation, orpId, dcom, cancellationToken).ConfigureAwait(false);
 				var ns = await wmi.OpenNamespace(WmiClient.RootCimV2Namespace, "en-US", cancellationToken).ConfigureAwait(false);
 				var procClass = (WmiClassObject)await ns.GetObjectAsync("Win32_Process", cancellationToken).ConfigureAwait(false);
-				string cmdLine = isPs ? $"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"{cmd?.Replace("\"", "\\\"")}\"" : cmd!;
+				string cmdLine = isPs ? $"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"{cmd?.Replace("\"", "\\\"")}\"" : $"cmd.exe /Q /c \"{cmd}\"";
 				var args = new Dictionary<string, object?> { ["CommandLine"] = cmdLine };
 				WmiInstanceObject result = await procClass.InvokeMethodAsync("Create", args, cancellationToken).ConfigureAwait(false);
 				uint ret = Convert.ToUInt32(result["ReturnValue"] ?? 0U);
@@ -923,7 +923,7 @@ public sealed class SmbCommand : Command
 				await rpc.ConnectPipe(scmClient, smb, new UncPath(host, Smb2Client.IpcName, pipe), cancellationToken).ConfigureAwait(false);
 				using var scm = await scmClient.OpenScm(Titanis.Winterop.Security.ScmAccessRights.Connect | Titanis.Winterop.Security.ScmAccessRights.CreateService, cancellationToken).ConfigureAwait(false);
 				string svcName = $"Winmgmt_{Guid.NewGuid():N}".Substring(0, 16);
-				string binPath = isPs ? $"powershell.exe -NoProfile -Command \"{cmd}\"" : cmd!;
+				string binPath = isPs ? $"powershell.exe -NoProfile -Command \"{cmd}\"" : $"cmd.exe /Q /c \"{cmd}\"";
 				AtlasConsole.Info($"{host}:{this.Port}", $"{method}: creating service {svcName}");
 				try
 				{

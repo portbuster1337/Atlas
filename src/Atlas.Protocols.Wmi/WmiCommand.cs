@@ -267,7 +267,9 @@ public sealed class WmiCommand : Command
 		var ns2 = await wmi.OpenNamespace(WmiClient.RootCimV2Namespace, "en-US", cancellationToken).ConfigureAwait(false);
 		var processClass = (WmiClassObject)await ns2.GetObjectAsync("Win32_Process", cancellationToken).ConfigureAwait(false);
 
-		string cmdLine = this.Exec ?? $"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"{this.PsExec!.Replace("\"", "\\\"")}\"";
+		string cmdLine = this.Exec is not null
+			? $"cmd.exe /Q /c \"{this.Exec}\""
+			: $"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"{this.PsExec!.Replace("\"", "\\\"")}\"";
 		var args = new Dictionary<string, object?>();
 		if (!string.IsNullOrEmpty(this.WorkingDir))
 			args["CurrentDirectory"] = this.WorkingDir;
